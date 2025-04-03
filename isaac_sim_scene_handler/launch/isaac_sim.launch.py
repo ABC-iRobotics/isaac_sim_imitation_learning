@@ -7,7 +7,7 @@ from ament_index_python.packages import get_package_share_directory
 
 def generate_launch_description():
 
-    package_name = 'isaac_sim_imitation_learning'
+    package_name = 'isaac_sim_scene_handler'
     
     package_share_dir = get_package_share_directory(package_name)
     node_path = os.path.join(os.path.dirname(os.path.dirname(package_share_dir)), 'lib', package_name, 'ScenePlanner')
@@ -23,6 +23,6 @@ def generate_launch_description():
         ExecuteProcess(
             cmd=[LaunchConfiguration('python_executable'), node_path],
             name='ScenePlanner',
-            output='screen',
+            output='log',
         )
     ])

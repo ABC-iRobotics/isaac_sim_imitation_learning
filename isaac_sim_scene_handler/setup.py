@@ -2,7 +2,7 @@ from setuptools import find_packages, setup
 import os
 from glob import glob
 
-package_name = 'isaac_sim_imitation_learning'
+package_name = 'isaac_sim_scene_handler'
 
 setup(
     name=package_name,
@@ -24,7 +24,7 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'ScenePlanner = isaac_sim_imitation_learning.ScenePlanner:main'
+            'ScenePlanner = isaac_sim_scene_handler.ScenePlanner:main'
         ],
     },
 )
