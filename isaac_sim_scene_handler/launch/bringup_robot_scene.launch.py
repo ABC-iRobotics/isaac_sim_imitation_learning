@@ -83,7 +83,7 @@ def generate_launch_description():
         output='screen',
         parameters=[
             moveit_config.to_dict(),
-            {'use_sim_time': True},
+            #{'use_sim_time': True},
         ],
     )
 
@@ -103,7 +103,7 @@ def generate_launch_description():
             moveit_config.planning_pipelines,
             moveit_config.robot_description_kinematics,            
             moveit_config.joint_limits,
-            {'use_sim_time': False},
+            #{'use_sim_time': False},
         ],
     )
 
@@ -190,10 +190,7 @@ def generate_launch_description():
         arguments=[],
         parameters=[{
             '/onrobot/gripper': LaunchConfiguration('gripper'),
-        }],
-        remappings=[
-            ('/joint_states', '/joint_command'),
-        ]
+        }]
     )
     
     analytical_solver = Node(
@@ -219,8 +216,8 @@ def generate_launch_description():
             ),
 
            # ~~~~~~~~~~~~~~~~~ Nodes ~~~~~~~~~~~~~~~~~ #
-            rviz_node,
             launch_ros.actions.SetParameter(name='use_sim_time', value=True),
+            rviz_node,
             tm_driver_node,
             static_tf,
             robot_state_publisher,

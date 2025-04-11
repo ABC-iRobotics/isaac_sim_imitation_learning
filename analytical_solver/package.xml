@@ -7,7 +7,12 @@
   <maintainer email="andrasmakany@gmail.com">user</maintainer>
   <license>MIT</license>
 
+  <exec_depend>std_srvs</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>moveit_msgs</exec_depend>
   <exec_depend>isaac_sim_msgs</exec_depend>
+  <exec_depend>onrobot_msgs</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

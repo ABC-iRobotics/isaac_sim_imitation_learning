@@ -9,9 +9,11 @@ from rclpy.executors import ExternalShutdownException
 import random
 from time import sleep
 from std_srvs.srv import Trigger
-from isaac_sim_msgs.srv import PoseRequest
+from isaac_sim_msgs.srv import PoseRequest, TubeParameter
+from sensor_msgs.msg import JointState
 
 import numpy as np
+from numpy import ndarray
 from scipy.spatial.transform import Rotation
 from isaacsim import SimulationApp
 
@@ -38,6 +40,7 @@ from omni.isaac.dynamic_control import _dynamic_control
 from isaacsim.storage.native import get_assets_root_path, is_file
 from isaacsim.core.utils.stage import is_stage_loading, get_current_stage
 from omni.isaac.core.utils.prims import get_prim_at_path
+import omni.isaac.core.utils.bounds as bounds_utils
 
 # enable ROS2 bridge extension
 extensions.enable_extension("isaacsim.ros2.bridge")
@@ -81,16 +84,19 @@ class IsaacSim(Node):
     tube_storage_position_relative = np.array([0.0, -0.04, 0.0])
     tube_storage_rotation = Rotation.from_euler('xyz',[np.pi/2, np.pi/2, 0])
     
-    workspace = np.array([[0.4, -0.5, 0.00], [1.0, 0.5, 0.00]])
+    workspace = np.array([[0.4, -0.2, 0.00], [0.6, 0.2, 0.00]])
     rack_to_hole_translation = np.array([-0.0675, 0.065, 0.0])
     hole_to_hole_translation = np.array([0.0, 0.03, 0.0])
     
-    tube_height = np.array([0.0, 0.0, 0.12])
-    tube_diameter = 0.03
+    
+    
 
     def __init__(self, nodename : str) -> None:
         
         super().__init__(nodename)
+        
+        self.joint_command = self.create_subscription(JointState, '/joint_command', self.NoneCallback, 10)
+        self.joint_states = self.create_publisher(JointState, '/joint_states', 10)
         
         self.launchIsaacSim()
 
@@ -115,6 +121,10 @@ class IsaacSim(Node):
                 else:
                     self.get_logger().info('Collision detected!')
         self.clash_detector.set_scope('')
+        self.cache = bounds_utils.create_bbox_cache()
+        
+        self.tube_height = 0.01*max(self.getAbsoluteBoundingBox('/World/Tubes/Tube_Target')[2])
+        self.tube_diameter = 0.01*min(self.getAbsoluteBoundingBox('/World/Tubes/Tube_Target')[2])
         
         self.randomizeRackContent(self.rack_list[0], self.tube_list[:6], 1)
         self.randomizeRackContent(self.rack_list[1], self.tube_list[6:11], 0)
@@ -123,6 +133,7 @@ class IsaacSim(Node):
         self.newScene = self.create_service(Trigger, '/IsaacSim/NewScene', self.newSceneCallback)
         self.poseRequest = self.create_service(PoseRequest, '/IsaacSim/RequestPose', self.poseRequestCallback)
         self.tubeGraspPoseRequest = self.create_service(PoseRequest, '/IsaacSim/RequestTubeGraspPose', self.tubeGraspPoseRequestCallback)
+        self.tubeParameterRequest = self.create_service(TubeParameter, '/IsaacSim/RequestTubeParameter', self.tubeParameterRequestCallback)
     
     def launchIsaacSim(self):
         
@@ -275,6 +286,7 @@ class IsaacSim(Node):
         self.resetAssets()
         simulation_app.update()
         
+        self.clash_detector.set_scope('/World/Racks')
         for idx, rack_path in enumerate(self.rack_list):
             validStage = False
             while not validStage:
@@ -311,28 +323,84 @@ class IsaacSim(Node):
         
         return response
 
-    def tubeGraspPoseRequestCallback(self, request, response):
+    def tubeGraspPoseRequestCallback(self, request : PoseRequest.Request, response : PoseRequest.Response):
+        simulation_app.update()
         self.get_logger().info('Tube pose request')
         prim = self.dc.get_rigid_body(request.path)
         prim_pose = self.dc.get_rigid_body_pose(prim)
-        grasp_translation = np.array(prim_pose.p) + self.tube_height + \
-            Rotation.from_euler('xyz', [0.0, 0.0, Rotation.from_quat(prim_pose.r).as_euler()[2]]).apply(np.array([self.tube_diameter/2, self.tube_diameter/2, 0.0]))
         
-        response.pose.translation.x = grasp_translation[0]
-        response.pose.translation.y = grasp_translation[1]
-        response.pose.translation.z = grasp_translation[2]
+        self.cache = bounds_utils.create_bbox_cache()
+        
+        axes : ndarray
+        centroid, axes, half_extent = self.getAbsoluteBoundingBox(request.path)
+        
+        scale_factor = np.absolute(np.linalg.eigvals(axes))
+        rotation = Rotation.from_matrix((axes.T/scale_factor).T).inv()
+        end_vec = rotation.apply(np.multiply(scale_factor, [extent if extent == max(half_extent) else 0.0 for extent in half_extent]))
+        quat = rotation.as_quat()
+        
+        self.get_logger().info('\nAxes:\n' + str(axes) + '\nRotation:\n' + str(rotation.as_matrix()))
+        self.get_logger().info('End vector: ' + str(end_vec))
+        self.get_logger().info('Centroid: ' + str(centroid))
+        
+        response : PoseRequest.Response = PoseRequest.Response()
+        response.pose.translation.x = centroid[0] + end_vec[0] 
+        response.pose.translation.y = centroid[1] + end_vec[1]
+        response.pose.translation.z = centroid[2] + end_vec[2]
         self.get_logger().info('['+str(response.pose.translation.x)+','+str(response.pose.translation.y )+','+str(response.pose.translation.z)+']')
         
-        response.pose.rotation.x = prim_pose.r[0]
-        response.pose.rotation.y = prim_pose.r[1]
-        response.pose.rotation.z = prim_pose.r[2]
-        response.pose.rotation.w = prim_pose.r[3]
+        response.pose.rotation.x = quat[0] #prim_pose.r[0]
+        response.pose.rotation.y = quat[1] #prim_pose.r[1]
+        response.pose.rotation.z = quat[2] #prim_pose.r[2]
+        response.pose.rotation.w = quat[3] #prim_pose.r[3]
         self.get_logger().info('['+str(prim_pose.r[0])+','+str(prim_pose.r[1])+','+str(prim_pose.r[2])+','+str(prim_pose.r[3])+']')
+        
+        
+        # z_rotation = Rotation.from_euler('xyz', [0.0, 0.0, Rotation.from_quat(prim_pose.r).as_euler('xyz')[2]])
+        # grasp_translation = np.array(prim_pose.p) + \
+        #     z_rotation.apply(np.array([self.tube_diameter/2, -self.tube_diameter/2, self.tube_height]))
+        
+        # response : PoseRequest.Response = PoseRequest.Response()
+        # response.pose.translation.x = grasp_translation[0]
+        # response.pose.translation.y = grasp_translation[1]
+        # response.pose.translation.z = grasp_translation[2] + 0.02
+        # self.get_logger().info('['+str(response.pose.translation.x)+','+str(response.pose.translation.y )+','+str(response.pose.translation.z)+']')
+        
+        # response.pose.rotation.x = prim_pose.r[0]
+        # response.pose.rotation.y = prim_pose.r[1]
+        # response.pose.rotation.z = prim_pose.r[2]
+        # response.pose.rotation.w = prim_pose.r[3]
+        # self.get_logger().info('['+str(prim_pose.r[0])+','+str(prim_pose.r[1])+','+str(prim_pose.r[2])+','+str(prim_pose.r[3])+']')
         
         return response
         
+    def tubeParameterRequestCallback(self, request : TubeParameter.Request, response : TubeParameter.Response):
+        axes : ndarray
+        centroid, axes, half_extent = self.getAbsoluteBoundingBox(request.path)
+        scale_factor = np.absolute(np.linalg.eigvals(axes))
+        quat = Rotation.from_matrix((axes.T / scale_factor).T).as_quat()
+        self.get_logger().info('Half extent: ' + str(half_extent) + ' Scaling factor: ' + str(scale_factor))
         
-
+        response.dimensions.x = 2*scale_factor[0]*half_extent[0]
+        response.dimensions.y = 2*scale_factor[1]*half_extent[1]
+        response.dimensions.z = 2*scale_factor[2]*half_extent[2]
+        
+        response.axis.x = quat[0]
+        response.axis.y = quat[1]
+        response.axis.z = quat[2]
+        response.axis.w = quat[3]
+        return response
+        
+    def NoneCallback(self, msg):
+        pass
+        
+    def getWorldBoundingBox(self, path : str):    
+        return bounds_utils.compute_aabb(self.cache, path)
+        
+    def getAbsoluteBoundingBox(self, path : str):
+        centroid, axes, half_extent = bounds_utils.compute_obb(self.cache, prim_path=path)
+        return (centroid, axes, half_extent)
+    
 def main():
     #Init ROS2
     try:
