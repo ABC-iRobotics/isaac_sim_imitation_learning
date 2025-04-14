@@ -2,6 +2,7 @@
 # ===================== ROS 2 Imports ==================== #
 # ======================================================== #
 import rclpy
+import rclpy.action
 from rclpy.node import Node
 from rclpy.executors import ExternalShutdownException, MultiThreadedExecutor
 from rclpy.callback_groups import ReentrantCallbackGroup, MutuallyExclusiveCallbackGroup
@@ -67,7 +68,7 @@ class AnalyticalSolver(Node):
         
 
         self.robot_interface = robot_interface
-        self.robot_interface.planner_id = ('ompl.planner_configs.RRTConnectkConfigDefault')
+        self.robot_interface.planner_id = ('STRIDEkConfigDefault')
         self.robot_interface.max_velocity = 0.5
         self.robot_interface.max_acceleration = 0.2
         self.robot_interface.cartesian_avoid_collisions = False
@@ -80,6 +81,7 @@ class AnalyticalSolver(Node):
         self.gripperPoseRequest = self.create_client(GripperPose, '/onrobot/pose', callback_group=self.mutually_exclusive_group)
         self.tubeParameterRequest = self.create_client(TubeParameter, '/IsaacSim/RequestTubeParameter', callback_group=self.mutually_exclusive_group)
         self.gripperController = rclpy.action.ActionClient(self, GripperCommand, '/onrobot_controller', callback_group=self.reentrant_group)
+        self.closeGripper = self.create_client(Trigger, '/IsaacSim/CloseGripper', callback_group=self.mutually_exclusive_group)
         
         while not (self.poseRequest.wait_for_service(timeout_sec=5.0) and 
             self.tubeGraspPoseRequest.wait_for_service(timeout_sec=5.0) and 
@@ -202,7 +204,7 @@ class AnalyticalSolver(Node):
             self.tubeHeight = max(self.tubeDimensions)
             self.get_logger().info('Height: ' + str(self.tubeHeight) + ' Width: ' + str(self.tubeWidth))
             request : GripperPose.Request = GripperPose.Request()
-            request.known.x = self.tubeWidth - 0.004
+            request.known.x = self.tubeWidth - 0.005
             
             future  = self.gripperPoseRequest.call_async(request)
             while not future.done():
@@ -226,19 +228,26 @@ class AnalyticalSolver(Node):
     
             # ! TODO: wtf is going on here?
             tube_orientation = Rotation.from_quat([self.targetPose.rotation.x, self.targetPose.rotation.y, self.targetPose.rotation.z, self.targetPose.rotation.w]).as_euler('xyz')
-            tube_orientation = Rotation.from_euler('xyz', [tube_orientation[0], tube_orientation[1], 0.0])
+            tube_orientation = Rotation.from_euler('xyz', [np.pi/2 + tube_orientation[0], -np.pi + tube_orientation[1], 0.0])
     
             orientation : Rotation = Rotation.from_quat([self.rackPose.rotation.x, self.rackPose.rotation.y, self.rackPose.rotation.z, self.rackPose.rotation.w])
-            orientation : Rotation = Rotation.from_euler('zxy', [-orientation.as_euler('zxy')[0], np.pi/2+tube_orientation.as_euler('zxy')[1], tube_orientation.as_euler('zxy')[2]])
-            tube_orientation.apply(orientation.as_matrix())
+            #orientation : Rotation = Rotation.from_euler('zxy', [-orientation.as_euler('zxy')[0], np.pi/2+tube_orientation.as_euler('zxy')[1], tube_orientation.as_euler('zxy')[2]])
+            #orientation : Rotation = Rotation.from_euler('zyx', [orientation.as_euler('xyz')[2], -tube_orientation.as_euler('xyz')[0], (np.pi/2)-tube_orientation.as_euler('xyz')[1]])
+            #orientation = orientation * Rotation.from_euler('xyz', [np.pi/2, -np.pi/2, np.pi/2 if np.pi - orientation.as_euler('xyz')[2] < 0 else -np.pi])
+
+            orientation :  Rotation =   Rotation.from_euler('xyz', [np.pi, 0.0, 0.0]) * \
+                                        Rotation.from_euler('xyz', [0.0, 0.0, - orientation.as_euler('xyz')[2] - (-np.pi if np.pi/2 - orientation.as_euler('xyz')[2] < 0 else np.pi)]) * \
+                                        tube_orientation
+
+            gripper_translation = orientation.apply([0.0, 0.0, self.gripper_goal.y+0.2]) 
 
             goal.pose.orientation.x = orientation.as_quat()[0]
             goal.pose.orientation.y = orientation.as_quat()[1]
             goal.pose.orientation.z = orientation.as_quat()[2]
             goal.pose.orientation.w = orientation.as_quat()[3]
-            goal.pose.position.x = self.targetPose.translation.x
-            goal.pose.position.y = self.targetPose.translation.y
-            goal.pose.position.z = self.targetPose.translation.z + self.gripper_goal.y + 0.2
+            goal.pose.position.x = self.targetPose.translation.x - gripper_translation[0]
+            goal.pose.position.y = self.targetPose.translation.y - gripper_translation[1]
+            goal.pose.position.z = self.targetPose.translation.z - gripper_translation[2]
     
             self.get_logger().info('X: ' + str(goal.pose.position.x) + ' Y: ' + str(goal.pose.position.y) + ' Z: ' + str(goal.pose.position.z))
     
@@ -249,7 +258,10 @@ class AnalyticalSolver(Node):
             rclpy.spin_once(self)
             
             self.robot_arm.set_start_state_to_current_state()
-            goal.pose.position.z -= 0.2
+            gripper_translation = orientation.apply([0.0, 0.0, self.gripper_goal.y]) 
+            goal.pose.position.x = self.targetPose.translation.x - gripper_translation[0]
+            goal.pose.position.y = self.targetPose.translation.y - gripper_translation[1]
+            goal.pose.position.z = self.targetPose.translation.z - gripper_translation[2]
             goal.header.stamp = self.get_clock().now().to_msg()
     
             self.moveRobotArmCartesianSpace(goal)
@@ -257,6 +269,14 @@ class AnalyticalSolver(Node):
             sleep(1)
 
             self.moveRobotGripper(self.gripper_goal.theta, 200.0)
+            request : Trigger.Request = Trigger.Request()
+            future  = self.closeGripper.call_async(request)
+            while not future.done():
+                rclpy.spin_once(self)
+                sleep(0.1)
+            while isinstance(future.result(), type(None)):
+                rclpy.spin_once(self)
+                sleep(0.1)
             
             
             

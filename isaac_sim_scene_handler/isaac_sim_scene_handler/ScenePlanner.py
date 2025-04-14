@@ -4,6 +4,7 @@ import os
 import sys
 import rclpy
 import rclpy.logging
+from rclpy.callback_groups import ReentrantCallbackGroup, MutuallyExclusiveCallbackGroup
 from rclpy.node import Node
 from rclpy.executors import ExternalShutdownException
 import random
@@ -95,8 +96,11 @@ class IsaacSim(Node):
         
         super().__init__(nodename)
         
-        self.joint_command = self.create_subscription(JointState, '/joint_command', self.NoneCallback, 10)
-        self.joint_states = self.create_publisher(JointState, '/joint_states', 10)
+        self.reentran_group = ReentrantCallbackGroup()
+        self.mutual_group = MutuallyExclusiveCallbackGroup()
+        
+        self.joint_command = self.create_subscription(JointState, '/joint_command', self.NoneCallback, 10, callback_group=self.reentran_group)
+        self.joint_states = self.create_publisher(JointState, '/joint_states', 10, callback_group=self.reentran_group)
         
         self.launchIsaacSim()
 
@@ -129,11 +133,11 @@ class IsaacSim(Node):
         self.randomizeRackContent(self.rack_list[0], self.tube_list[:6], 1)
         self.randomizeRackContent(self.rack_list[1], self.tube_list[6:11], 0)
         
-        self.resetScene = self.create_service(Trigger, '/IsaacSim/ResetScene', self.resetSceneCallback)
-        self.newScene = self.create_service(Trigger, '/IsaacSim/NewScene', self.newSceneCallback)
-        self.poseRequest = self.create_service(PoseRequest, '/IsaacSim/RequestPose', self.poseRequestCallback)
-        self.tubeGraspPoseRequest = self.create_service(PoseRequest, '/IsaacSim/RequestTubeGraspPose', self.tubeGraspPoseRequestCallback)
-        self.tubeParameterRequest = self.create_service(TubeParameter, '/IsaacSim/RequestTubeParameter', self.tubeParameterRequestCallback)
+        self.resetScene = self.create_service(Trigger, '/IsaacSim/ResetScene', self.resetSceneCallback, callback_group=self.mutual_group)
+        self.newScene = self.create_service(Trigger, '/IsaacSim/NewScene', self.newSceneCallback, callback_group=self.mutual_group)
+        self.poseRequest = self.create_service(PoseRequest, '/IsaacSim/RequestPose', self.poseRequestCallback, callback_group=self.reentran_group)
+        self.tubeGraspPoseRequest = self.create_service(PoseRequest, '/IsaacSim/RequestTubeGraspPose', self.tubeGraspPoseRequestCallback, callback_group=self.reentran_group)
+        self.tubeParameterRequest = self.create_service(TubeParameter, '/IsaacSim/RequestTubeParameter', self.tubeParameterRequestCallback, callback_group=self.reentran_group)
     
     def launchIsaacSim(self):
         
@@ -236,6 +240,8 @@ class IsaacSim(Node):
         )
         
         self.dc.set_rigid_body_pose(rack, transform)
+        self.dc.set_rigid_body_angular_velocity(rack, Float3([0.0, 0.0, 0.0]))
+        self.dc.set_rigid_body_linear_velocity(rack, Float3([0.0, 0.0, 0.0]))
         
     def placeTubeInRack(self, rack_path, tube_path, slot_num):
     
