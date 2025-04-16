@@ -53,7 +53,6 @@ def generate_launch_description():
     controller_path = 'config/moveit_controllers.yaml'
     ros_controller_path = 'config/ros2_controllers.yaml'
     joint_limits_path = 'config/joint_limits.yaml'
-    moveit_cpp_path = 'config/moveit_py_config.yaml'
 
     # MoveIt Configuration
     moveit_config = (
@@ -70,7 +69,6 @@ def generate_launch_description():
                 default_planning_pipeline="ompl",
                 load_all=True
             )
-        .moveit_cpp(file_path=moveit_cpp_path)
         .to_moveit_configs()
     )
     

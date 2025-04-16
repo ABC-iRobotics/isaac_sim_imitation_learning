@@ -11,14 +11,13 @@ import random
 from time import sleep
 from std_srvs.srv import Trigger
 from isaac_sim_msgs.srv import PoseRequest, TubeParameter
+from geometry_msgs.msg import Transform
 from sensor_msgs.msg import JointState
 
 import numpy as np
 from numpy import ndarray
 from scipy.spatial.transform import Rotation
 from isaacsim import SimulationApp
-
-import ament_index_python.packages as ament_packages
 
 CONFIG = {"renderer": "RaytracedLighting", "headless": False}
 #CONFIG = {"headless": False}
@@ -138,6 +137,7 @@ class IsaacSim(Node):
         self.poseRequest = self.create_service(PoseRequest, '/IsaacSim/RequestPose', self.poseRequestCallback, callback_group=self.reentran_group)
         self.tubeGraspPoseRequest = self.create_service(PoseRequest, '/IsaacSim/RequestTubeGraspPose', self.tubeGraspPoseRequestCallback, callback_group=self.reentran_group)
         self.tubeParameterRequest = self.create_service(TubeParameter, '/IsaacSim/RequestTubeParameter', self.tubeParameterRequestCallback, callback_group=self.reentran_group)
+        self.tubeGoalPoseRequest = self.create_service(PoseRequest, '/IsaacSim/RequestTubeGoalPose', self.tubeGoalPoseRequestCallback, callback_group=self.reentran_group)
     
     def launchIsaacSim(self):
         
@@ -395,6 +395,38 @@ class IsaacSim(Node):
     def getAbsoluteBoundingBox(self, path : str):
         centroid, axes, half_extent = bounds_utils.compute_obb(self.cache, prim_path=path)
         return (centroid, axes, half_extent)
+    
+    def getFirstEmptySlotTransformation(self, path : str):
+        slot_num = 0
+        for slot in self.rack_usage[path]:
+            if slot:
+                break
+            slot_num += 1
+        
+        rack = self.dc.get_rigid_body(path)
+
+        rotation = Rotation.from_quat(self.dc.get_rigid_body_pose(rack).r)
+        translation = self.dc.get_rigid_body_pose(rack).p
+        translation = np.array([translation[0], translation[1], translation[2]]) + \
+        Rotation.from_euler('xyz', [0.0, 0.0, rotation.as_euler('xyz')[2]]).apply(
+                    self.rack_to_hole_translation + slot_num * self.hole_to_hole_translation
+            )
+            
+        transformation : Transform = Transform()
+        transformation.translation.x = translation[0]
+        transformation.translation.y = translation[1]
+        transformation.translation.z = translation[2]
+        transformation.rotation.x = rotation.as_quat[0]
+        transformation.rotation.y = rotation.as_quat[1]
+        transformation.rotation.z = rotation.as_quat[2]
+        transformation.rotation.w = rotation.as_quat[3]
+        
+        return transformation
+    
+    def tubeGoalPoseRequestCallback(self, request : PoseRequest.Request, response : PoseRequest.Response):
+        self.get_logger().info('Get Tube goal pose request')
+        response.pose = self.getFirstEmptySlotTransformation(request.path)
+        return response
     
 def main():
     #Init ROS2

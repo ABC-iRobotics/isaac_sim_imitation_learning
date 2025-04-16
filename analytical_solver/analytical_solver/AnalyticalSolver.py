@@ -57,7 +57,7 @@ class AnalyticalSolver(Node):
     # * Target prim's path to solve the task
     target = '/World/Tubes/Tube_Target'
 
-    def __init__(self, nodename : str, robot : MoveItPy = None, robot_interface : MoveIt2 = None):
+    def __init__(self, nodename : str):
         super().__init__(nodename)
 
         self.targetPose : Transform
@@ -111,13 +111,6 @@ class AnalyticalSolver(Node):
 
         self.move_to_tube = self.create_service(Trigger, '/AnalyticSolver/MoveToTube', self.moveToTubeCallback, callback_group=self.reentrant_group)
 
-        # self.robot = robot
-        # self.robot_arm : PlanningComponent = robot.get_planning_component('tmr_arm')
-        # self.robot_gripper : PlanningComponent = robot.get_planning_component('rg6')
-        # self.get_logger().info('MoveItPy instance created')
-        # self.execution_manager : TrajectoryExecutionManager = self.robot.get_trajectory_execution_manager()
-        # self.planningscene : PlanningSceneMonitor = self.robot.get_planning_scene_monitor()
-        
         self.robot_interface.move_to_configuration(self.ready1, ['joint_1', 'joint_2', 'joint_3', 'joint_4', 'joint_5', 'joint_6'])
 
     def gripperStateCallback(self, msg : Bool):
@@ -218,8 +211,6 @@ class AnalyticalSolver(Node):
             self.get_logger().info('Gripper width: ' + str(self.gripper_goal.x) + ' Gripper height: ' + str(self.gripper_goal.y))
             
             self.moveRobotGripper(np.deg2rad(-35), 200.0)
-            
-            # self.robot_arm.set_start_state_to_current_state()
     
             goal : PoseStamped = PoseStamped()
             goal.header.frame_id = "base"
@@ -246,23 +237,20 @@ class AnalyticalSolver(Node):
     
             self.get_logger().info('X: ' + str(goal.pose.position.x) + ' Y: ' + str(goal.pose.position.y) + ' Z: ' + str(goal.pose.position.z))
     
-            # self.robot_arm.set_goal_state(pose_stamped_msg=goal, pose_link="flange")
-    
-            self.moveRobotArmCartesianSpace(pose=goal, cartesian=False)
-            #self.moveRobotArmJointSpace()
+            self.moveRobotArm(pose=goal, cartesian=False)
+
             self.get_logger().info('Done joint space movement')
             
             sleep(1)
             rclpy.spin_once(self)
-            
-            # self.robot_arm.set_start_state_to_current_state()
+
             gripper_translation = orientation.apply([0.0, 0.0, self.gripper_goal.y]) 
             goal.pose.position.x = self.targetPose.translation.x - gripper_translation[0]
             goal.pose.position.y = self.targetPose.translation.y - gripper_translation[1]
             goal.pose.position.z = self.targetPose.translation.z - gripper_translation[2]
             goal.header.stamp = self.get_clock().now().to_msg()
     
-            self.moveRobotArmCartesianSpace(pose=goal, cartesian=True)
+            self.moveRobotArm(pose=goal, cartesian=True)
             
             sleep(1)
 
@@ -287,9 +275,14 @@ class AnalyticalSolver(Node):
             goal.pose.position.y = self.targetPose.translation.y - gripper_translation[1]
             goal.pose.position.z = self.targetPose.translation.z - gripper_translation[2]
             goal.header.stamp = self.get_clock().now().to_msg()
-    
-            # self.robot_arm.set_start_state_to_current_state()
-            self.moveRobotArmCartesianSpace(goal, velocity=0.02, acceleration=0.02)
+            
+            self.moveRobotArm(goal, velocity=0.02, acceleration=0.02)
+            
+            sleep(1)
+            rclpy.spin_once(self)
+            
+            
+            
             
             
         except Exception as e:
@@ -301,50 +294,10 @@ class AnalyticalSolver(Node):
 
         return response
 
-    # def moveRobotArmJointSpace(
-    #     self,
-    #     single_plan_parameters=None,
-    #     multi_plan_parameters=None,
-    #     ):
-    #     """A helper function to plan and execute a motion."""
-    #     # plan to goal
-    #     self.get_logger().info("Planning trajectory")
-    #     if multi_plan_parameters is not None:
-    #             plan_result = self.robot_arm.plan(
-    #                     multi_plan_parameters=multi_plan_parameters
-    #             )
-    #     elif single_plan_parameters is not None:
-    #             plan_result = self.robot_arm.plan(
-    #                     single_plan_parameters=single_plan_parameters
-    #             )
-    #     else:
-    #             plan_result = self.robot_arm.plan()
-
-    #     # execute the plan
-    #     if plan_result:
-    #             self.get_logger().info("Executing plan")
-    #             robot_trajectory : RobotTrajectory = plan_result.trajectory
-    #             self.get_logger().info(str(robot_trajectory))
-    #             self.robot.execute(robot_trajectory, controllers=[])
-    #             self.execution_manager.wait_for_trajectory_completion()
-    #             sleep(1)
-    #             rclpy.spin_once(self)
-    #             while not self.stopped:
-    #                 rclpy.spin_once(self)
-    #             self.stopped = False
-    #             sleep(1)
-    #             self.get_logger().info('Movement completed!')
-    #     else:
-    #             self.get_logger().error("Planning failed")
-
-    #     self.robot_arm.set_start_state_to_current_state()
-    #     self.robotState = self.robot_arm.get_start_state()
-    #     self.planningscene.clear_octomap()
-
-    def moveRobotArmCartesianSpace(self,    pose : Pose | PoseStamped | None = None, 
-                                            position : tuple[float, float, float] | None = None, orientation : tuple[float, float, float, float] | None = None,
-                                            velocity : float = 0.0, acceleration : float = 0.0,
-                                            cartesian : bool = False):
+    def moveRobotArm(self,  pose : Pose | PoseStamped | None = None, 
+                            position : tuple[float, float, float] | None = None, orientation : tuple[float, float, float, float] | None = None,
+                            velocity : float = 0.0, acceleration : float = 0.0,
+                            cartesian : bool = False):
         self.get_logger().info('Start planing and moving')
         if not velocity == 0.0:
             self.robot_interface.max_velocity = velocity
@@ -366,7 +319,6 @@ class AnalyticalSolver(Node):
                 cartesian_fraction_threshold=0.000001,
             )
         self.robot_interface.wait_until_executed()
-        #self.execution_manager.wait_for_trajectory_completion()
         self.get_logger().info('Execution done')
         sleep(0.1)
         rclpy.spin_once(self)
@@ -374,10 +326,6 @@ class AnalyticalSolver(Node):
             rclpy.spin_once(self)
         self.stopped = False
         self.get_logger().info('Movement completed!')
-
-        # self.robot_arm.set_start_state_to_current_state()
-        # self.robotState = self.robot_arm.get_start_state()
-        # self.planningscene.clear_octomap()
 
     def moveRobotGripper(self, joint_angle : float, effort : float):
         
@@ -423,7 +371,6 @@ def main():
     try:
         rclpy.init(args=None)
 
-        # robot = MoveItPy(node_name='MoveItPy')
         executor = MultiThreadedExecutor()
         solver = AnalyticalSolver('AnalyticalSolver')
         executor.add_node(solver)
