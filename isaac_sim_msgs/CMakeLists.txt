@@ -16,6 +16,7 @@ find_package(rosidl_default_generators REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/PoseRequest.srv"
+  "srv/TubeParameter.srv"
   DEPENDENCIES geometry_msgs
 )
 

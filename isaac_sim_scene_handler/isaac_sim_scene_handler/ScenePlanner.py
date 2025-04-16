@@ -4,18 +4,20 @@ import os
 import sys
 import rclpy
 import rclpy.logging
+from rclpy.callback_groups import ReentrantCallbackGroup, MutuallyExclusiveCallbackGroup
 from rclpy.node import Node
-from rclpy.executors import ExternalShutdownException
+from rclpy.executors import ExternalShutdownException, MultiThreadedExecutor
 import random
 from time import sleep
 from std_srvs.srv import Trigger
-from isaac_sim_msgs.srv import PoseRequest
+from isaac_sim_msgs.srv import PoseRequest, TubeParameter
+from geometry_msgs.msg import Transform
+from sensor_msgs.msg import JointState
 
 import numpy as np
+from numpy import ndarray
 from scipy.spatial.transform import Rotation
 from isaacsim import SimulationApp
-
-import ament_index_python.packages as ament_packages
 
 CONFIG = {"renderer": "RaytracedLighting", "headless": False}
 #CONFIG = {"headless": False}
@@ -30,14 +32,13 @@ from carb import Float3, Float4
 
 import omni
 
-from omni.isaac.dynamic_control import _dynamic_control
 from isaacsim.core.api import World
 from isaacsim.core.utils import extensions, stage
-from isaacsim.storage.native import get_assets_root_path
 from omni.isaac.dynamic_control import _dynamic_control
 from isaacsim.storage.native import get_assets_root_path, is_file
 from isaacsim.core.utils.stage import is_stage_loading, get_current_stage
 from omni.isaac.core.utils.prims import get_prim_at_path
+import omni.isaac.core.utils.bounds as bounds_utils
 
 # enable ROS2 bridge extension
 extensions.enable_extension("isaacsim.ros2.bridge")
@@ -59,6 +60,8 @@ class IsaacSim(Node):
         '/World/Racks/Rack_Goal',
     ]
     
+    rack_usage : dict = {name : 6 * [False] for name in rack_list}
+    
     rack_storage_position = np.array([-1.0, 0.0, 0.0])
     rack_storage_position_relative = np.array([-0.1, 0.0, 0.0])
     rack_storage_rotation = Rotation.from_euler('xyz',[np.pi/2, 0.0, 0.0])
@@ -77,24 +80,30 @@ class IsaacSim(Node):
         '/World/Tubes/Tube_Fix_10',
     ]
     
+    tube_usage : dict = {name : False for name in tube_list}
+    
     tube_storage_position = np.array([-1.0, 0.0, 0.022])
     tube_storage_position_relative = np.array([0.0, -0.04, 0.0])
     tube_storage_rotation = Rotation.from_euler('xyz',[np.pi/2, np.pi/2, 0])
     
-    workspace = np.array([[0.4, -0.5, 0.00], [1.0, 0.5, 0.00]])
+    workspace = np.array([[0.4, -0.2, 0.00], [0.6, 0.2, 0.00]])
     rack_to_hole_translation = np.array([-0.0675, 0.065, 0.0])
     hole_to_hole_translation = np.array([0.0, 0.03, 0.0])
     
-    tube_height = np.array([0.0, 0.0, 0.12])
-    tube_diameter = 0.03
+    
+    
 
     def __init__(self, nodename : str) -> None:
         
         super().__init__(nodename)
         
+        self.reentran_group = ReentrantCallbackGroup()
+        self.mutual_group = MutuallyExclusiveCallbackGroup()
+        
+        self.joint_command = self.create_subscription(JointState, '/joint_command', self.NoneCallback, 10, callback_group=self.reentran_group)
+        self.joint_states = self.create_publisher(JointState, '/joint_states', 10, callback_group=self.reentran_group)
+        
         self.launchIsaacSim()
-
-        self.tube_in_use : dict = {}
         
         self.stage = get_current_stage()
         
@@ -115,14 +124,20 @@ class IsaacSim(Node):
                 else:
                     self.get_logger().info('Collision detected!')
         self.clash_detector.set_scope('')
+        self.cache = bounds_utils.create_bbox_cache()
+        
+        self.tube_height = 0.01*max(self.getAbsoluteBoundingBox('/World/Tubes/Tube_Target')[2])
+        self.tube_diameter = 0.01*min(self.getAbsoluteBoundingBox('/World/Tubes/Tube_Target')[2])
         
         self.randomizeRackContent(self.rack_list[0], self.tube_list[:6], 1)
         self.randomizeRackContent(self.rack_list[1], self.tube_list[6:11], 0)
         
-        self.resetScene = self.create_service(Trigger, '/IsaacSim/ResetScene', self.resetSceneCallback)
-        self.newScene = self.create_service(Trigger, '/IsaacSim/NewScene', self.newSceneCallback)
-        self.poseRequest = self.create_service(PoseRequest, '/IsaacSim/RequestPose', self.poseRequestCallback)
-        self.tubeGraspPoseRequest = self.create_service(PoseRequest, '/IsaacSim/RequestTubeGraspPose', self.tubeGraspPoseRequestCallback)
+        self.resetScene = self.create_service(Trigger, '/IsaacSim/ResetScene', self.resetSceneCallback, callback_group=self.mutual_group)
+        self.newScene = self.create_service(Trigger, '/IsaacSim/NewScene', self.newSceneCallback, callback_group=self.mutual_group)
+        self.poseRequest = self.create_service(PoseRequest, '/IsaacSim/RequestPose', self.poseRequestCallback, callback_group=self.reentran_group)
+        self.tubeGraspPoseRequest = self.create_service(PoseRequest, '/IsaacSim/RequestTubeGraspPose', self.tubeGraspPoseRequestCallback, callback_group=self.reentran_group)
+        self.tubeParameterRequest = self.create_service(TubeParameter, '/IsaacSim/RequestTubeParameter', self.tubeParameterRequestCallback, callback_group=self.reentran_group)
+        self.tubeGoalPoseRequest = self.create_service(PoseRequest, '/IsaacSim/RequestTubeGoalPose', self.tubeGoalPoseRequestCallback, callback_group=self.reentran_group)
     
     def launchIsaacSim(self):
         
@@ -190,9 +205,10 @@ class IsaacSim(Node):
                     Float3(self.tube_storage_position + idx*self.tube_storage_position_relative), 
                     Float4(self.tube_storage_rotation.as_quat())
                 )
-                self.tube_in_use[tube_path] = False
     
                 self.dc.set_rigid_body_pose(tube, transform)
+            
+            self.tube_usage = {name : False for name in self.tube_list}
                 
             for idx, rack_path in enumerate(self.rack_list):
                 rack = self.dc.get_rigid_body(rack_path)
@@ -203,10 +219,12 @@ class IsaacSim(Node):
     
                 self.dc.set_rigid_body_pose(rack, transform)
                 
+            self.rack_usage = {name : 6 * [False] for name in self.rack_list}
+                
     def resetSceneCallback(self, request, response):
         self.get_logger().info('Reset scene request')
         self.resetAssets()
-        
+        self.get_logger().info('Successfully reseted scene')
         response.success = True
         response.message = ""
         return response
@@ -225,6 +243,8 @@ class IsaacSim(Node):
         )
         
         self.dc.set_rigid_body_pose(rack, transform)
+        self.dc.set_rigid_body_angular_velocity(rack, Float3([0.0, 0.0, 0.0]))
+        self.dc.set_rigid_body_linear_velocity(rack, Float3([0.0, 0.0, 0.0]))
         
     def placeTubeInRack(self, rack_path, tube_path, slot_num):
     
@@ -250,14 +270,15 @@ class IsaacSim(Node):
         self.get_logger().debug('Tube abs translation: ' + str(translation))
         self.get_logger().debug('Tube rel translation: ' + str(np.array(transform.p) - np.array(abs_translation)) + ' ' + str(transform.r))
         self.get_logger().debug('Tube transformation: ' + str(transform))
-        self.tube_in_use[tube_path] = True
+
+        self.rack_usage[rack_path][slot_num] = True
+        self.tube_usage[tube_path] = True
 
         self.dc.set_rigid_body_pose(tube, transform)
         self.dc.set_rigid_body_angular_velocity(tube, Float3([0.0, 0.0, 0.0]))
         self.dc.set_rigid_body_linear_velocity(tube, Float3([0.0, 0.0, 0.0]))
             
     def randomizeRackContent(self, rack_path, tube_list : list, min_placed_tubes):
-        rack = self.dc.get_rigid_body(rack_path)
         
         choices = [i for i in range(6)]
         
@@ -275,6 +296,7 @@ class IsaacSim(Node):
         self.resetAssets()
         simulation_app.update()
         
+        self.clash_detector.set_scope('/World/Racks')
         for idx, rack_path in enumerate(self.rack_list):
             validStage = False
             while not validStage:
@@ -287,6 +309,8 @@ class IsaacSim(Node):
         
         self.randomizeRackContent(self.rack_list[0], self.tube_list[:6], 1)
         self.randomizeRackContent(self.rack_list[1], self.tube_list[6:11], 0)
+        
+        self.get_logger().info('\nRacks:\n' + str(self.rack_usage) + '\nTubes:\n' + str(self.tube_usage))
         
         response.success = True
         response.message = ''
@@ -311,34 +335,106 @@ class IsaacSim(Node):
         
         return response
 
-    def tubeGraspPoseRequestCallback(self, request, response):
+    def tubeGraspPoseRequestCallback(self, request : PoseRequest.Request, response : PoseRequest.Response):
+        simulation_app.update()
         self.get_logger().info('Tube pose request')
         prim = self.dc.get_rigid_body(request.path)
         prim_pose = self.dc.get_rigid_body_pose(prim)
-        grasp_translation = np.array(prim_pose.p) + self.tube_height + \
-            Rotation.from_euler('xyz', [0.0, 0.0, Rotation.from_quat(prim_pose.r).as_euler()[2]]).apply(np.array([self.tube_diameter/2, self.tube_diameter/2, 0.0]))
         
-        response.pose.translation.x = grasp_translation[0]
-        response.pose.translation.y = grasp_translation[1]
-        response.pose.translation.z = grasp_translation[2]
+        self.cache = bounds_utils.create_bbox_cache()
+        
+        axes : ndarray
+        centroid, axes, half_extent = self.getAbsoluteBoundingBox(request.path)
+        
+        scale_factor = np.absolute(np.linalg.eigvals(axes))
+        rotation = Rotation.from_matrix((axes.T/scale_factor).T).inv()
+        end_vec = rotation.apply(np.multiply(scale_factor, [extent if extent == max(half_extent) else 0.0 for extent in half_extent]))
+        quat = rotation.as_quat()
+        
+        self.get_logger().info('\nAxes:\n' + str(axes) + '\nRotation:\n' + str(rotation.as_matrix()))
+        self.get_logger().info('End vector: ' + str(end_vec))
+        self.get_logger().info('Centroid: ' + str(centroid))
+        
+        response : PoseRequest.Response = PoseRequest.Response()
+        response.pose.translation.x = centroid[0] + end_vec[0] 
+        response.pose.translation.y = centroid[1] + end_vec[1]
+        response.pose.translation.z = centroid[2] + end_vec[2]
         self.get_logger().info('['+str(response.pose.translation.x)+','+str(response.pose.translation.y )+','+str(response.pose.translation.z)+']')
         
-        response.pose.rotation.x = prim_pose.r[0]
-        response.pose.rotation.y = prim_pose.r[1]
-        response.pose.rotation.z = prim_pose.r[2]
-        response.pose.rotation.w = prim_pose.r[3]
+        response.pose.rotation.x = quat[0]
+        response.pose.rotation.y = quat[1]
+        response.pose.rotation.z = quat[2]
+        response.pose.rotation.w = quat[3]
         self.get_logger().info('['+str(prim_pose.r[0])+','+str(prim_pose.r[1])+','+str(prim_pose.r[2])+','+str(prim_pose.r[3])+']')
         
         return response
         
+    def tubeParameterRequestCallback(self, request : TubeParameter.Request, response : TubeParameter.Response):
+        axes : ndarray
+        centroid, axes, half_extent = self.getAbsoluteBoundingBox(request.path)
+        scale_factor = np.absolute(np.linalg.eigvals(axes))
+        quat = Rotation.from_matrix((axes.T / scale_factor).T).as_quat()
+        self.get_logger().info('Half extent: ' + str(half_extent) + ' Scaling factor: ' + str(scale_factor))
         
+        response.dimensions.x = 2*scale_factor[0]*half_extent[0]
+        response.dimensions.y = 2*scale_factor[1]*half_extent[1]
+        response.dimensions.z = 2*scale_factor[2]*half_extent[2]
+        
+        response.axis.x = quat[0]
+        response.axis.y = quat[1]
+        response.axis.z = quat[2]
+        response.axis.w = quat[3]
+        return response
+        
+    def NoneCallback(self, msg):
+        pass
+        
+    def getWorldBoundingBox(self, path : str):    
+        return bounds_utils.compute_aabb(self.cache, path)
+        
+    def getAbsoluteBoundingBox(self, path : str):
+        centroid, axes, half_extent = bounds_utils.compute_obb(self.cache, prim_path=path)
+        return (centroid, axes, half_extent)
+    
+    def getFirstEmptySlotTransformation(self, path : str):
+        slot_num = 0
+        for slot in self.rack_usage[path]:
+            if slot:
+                break
+            slot_num += 1
+        
+        rack = self.dc.get_rigid_body(path)
 
+        rotation = Rotation.from_quat(self.dc.get_rigid_body_pose(rack).r)
+        translation = self.dc.get_rigid_body_pose(rack).p
+        translation = np.array([translation[0], translation[1], translation[2]]) + \
+        Rotation.from_euler('xyz', [0.0, 0.0, rotation.as_euler('xyz')[2]]).apply(
+                    self.rack_to_hole_translation + slot_num * self.hole_to_hole_translation
+            )
+            
+        transformation : Transform = Transform()
+        transformation.translation.x = translation[0]
+        transformation.translation.y = translation[1]
+        transformation.translation.z = translation[2]
+        transformation.rotation.x = rotation.as_quat[0]
+        transformation.rotation.y = rotation.as_quat[1]
+        transformation.rotation.z = rotation.as_quat[2]
+        transformation.rotation.w = rotation.as_quat[3]
+        
+        return transformation
+    
+    def tubeGoalPoseRequestCallback(self, request : PoseRequest.Request, response : PoseRequest.Response):
+        self.get_logger().info('Get Tube goal pose request')
+        response.pose = self.getFirstEmptySlotTransformation(request.path)
+        return response
+    
 def main():
     #Init ROS2
     try:
         rclpy.init(args=None)
 
         node = IsaacSim('IsaacSim')
+        node.executor = MultiThreadedExecutor()
         node.runApp()
         
         #Exiting
