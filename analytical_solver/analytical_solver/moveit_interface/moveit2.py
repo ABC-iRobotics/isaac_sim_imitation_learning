@@ -299,7 +299,7 @@ class MoveIt2:
         self.motion_suceeded = False
         self.__execution_goal_handle = None
         self.__last_error_code = None
-        self.__wait_until_executed_rate = self._node.create_rate(1000.0)
+        self.__wait_until_executed_rate = self._node.create_rate(1000.0, self._node.get_clock())
         self.__execution_mutex = threading.Lock()
 
         # Event that enables waiting until async future is done
@@ -758,7 +758,8 @@ class MoveIt2:
             return False
 
         while self.__is_motion_requested or self.__is_executing:
-            self.__wait_until_executed_rate.sleep()
+            #self.__wait_until_executed_rate.sleep()
+            sleep(0.001)
             rclpy.spin_once(self._node)
 
         return self.motion_suceeded

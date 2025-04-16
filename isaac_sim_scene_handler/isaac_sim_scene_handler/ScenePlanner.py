@@ -6,7 +6,7 @@ import rclpy
 import rclpy.logging
 from rclpy.callback_groups import ReentrantCallbackGroup, MutuallyExclusiveCallbackGroup
 from rclpy.node import Node
-from rclpy.executors import ExternalShutdownException
+from rclpy.executors import ExternalShutdownException, MultiThreadedExecutor
 import random
 from time import sleep
 from std_srvs.srv import Trigger
@@ -33,10 +33,8 @@ from carb import Float3, Float4
 
 import omni
 
-from omni.isaac.dynamic_control import _dynamic_control
 from isaacsim.core.api import World
 from isaacsim.core.utils import extensions, stage
-from isaacsim.storage.native import get_assets_root_path
 from omni.isaac.dynamic_control import _dynamic_control
 from isaacsim.storage.native import get_assets_root_path, is_file
 from isaacsim.core.utils.stage import is_stage_loading, get_current_stage
@@ -63,6 +61,8 @@ class IsaacSim(Node):
         '/World/Racks/Rack_Goal',
     ]
     
+    rack_usage : dict = {name : 6 * [False] for name in rack_list}
+    
     rack_storage_position = np.array([-1.0, 0.0, 0.0])
     rack_storage_position_relative = np.array([-0.1, 0.0, 0.0])
     rack_storage_rotation = Rotation.from_euler('xyz',[np.pi/2, 0.0, 0.0])
@@ -80,6 +80,8 @@ class IsaacSim(Node):
         '/World/Tubes/Tube_Fix_09',
         '/World/Tubes/Tube_Fix_10',
     ]
+    
+    tube_usage : dict = {name : False for name in tube_list}
     
     tube_storage_position = np.array([-1.0, 0.0, 0.022])
     tube_storage_position_relative = np.array([0.0, -0.04, 0.0])
@@ -103,8 +105,6 @@ class IsaacSim(Node):
         self.joint_states = self.create_publisher(JointState, '/joint_states', 10, callback_group=self.reentran_group)
         
         self.launchIsaacSim()
-
-        self.tube_in_use : dict = {}
         
         self.stage = get_current_stage()
         
@@ -205,9 +205,10 @@ class IsaacSim(Node):
                     Float3(self.tube_storage_position + idx*self.tube_storage_position_relative), 
                     Float4(self.tube_storage_rotation.as_quat())
                 )
-                self.tube_in_use[tube_path] = False
     
                 self.dc.set_rigid_body_pose(tube, transform)
+            
+            self.tube_usage = {name : False for name in self.tube_list}
                 
             for idx, rack_path in enumerate(self.rack_list):
                 rack = self.dc.get_rigid_body(rack_path)
@@ -218,10 +219,12 @@ class IsaacSim(Node):
     
                 self.dc.set_rigid_body_pose(rack, transform)
                 
+            self.rack_usage = {name : 6 * [False] for name in self.rack_list}
+                
     def resetSceneCallback(self, request, response):
         self.get_logger().info('Reset scene request')
         self.resetAssets()
-        
+        self.get_logger().info('Successfully reseted scene')
         response.success = True
         response.message = ""
         return response
@@ -267,14 +270,15 @@ class IsaacSim(Node):
         self.get_logger().debug('Tube abs translation: ' + str(translation))
         self.get_logger().debug('Tube rel translation: ' + str(np.array(transform.p) - np.array(abs_translation)) + ' ' + str(transform.r))
         self.get_logger().debug('Tube transformation: ' + str(transform))
-        self.tube_in_use[tube_path] = True
+
+        self.rack_usage[rack_path][slot_num] = True
+        self.tube_usage[tube_path] = True
 
         self.dc.set_rigid_body_pose(tube, transform)
         self.dc.set_rigid_body_angular_velocity(tube, Float3([0.0, 0.0, 0.0]))
         self.dc.set_rigid_body_linear_velocity(tube, Float3([0.0, 0.0, 0.0]))
             
     def randomizeRackContent(self, rack_path, tube_list : list, min_placed_tubes):
-        rack = self.dc.get_rigid_body(rack_path)
         
         choices = [i for i in range(6)]
         
@@ -305,6 +309,8 @@ class IsaacSim(Node):
         
         self.randomizeRackContent(self.rack_list[0], self.tube_list[:6], 1)
         self.randomizeRackContent(self.rack_list[1], self.tube_list[6:11], 0)
+        
+        self.get_logger().info('\nRacks:\n' + str(self.rack_usage) + '\nTubes:\n' + str(self.tube_usage))
         
         response.success = True
         response.message = ''
@@ -355,28 +361,11 @@ class IsaacSim(Node):
         response.pose.translation.z = centroid[2] + end_vec[2]
         self.get_logger().info('['+str(response.pose.translation.x)+','+str(response.pose.translation.y )+','+str(response.pose.translation.z)+']')
         
-        response.pose.rotation.x = quat[0] #prim_pose.r[0]
-        response.pose.rotation.y = quat[1] #prim_pose.r[1]
-        response.pose.rotation.z = quat[2] #prim_pose.r[2]
-        response.pose.rotation.w = quat[3] #prim_pose.r[3]
+        response.pose.rotation.x = quat[0]
+        response.pose.rotation.y = quat[1]
+        response.pose.rotation.z = quat[2]
+        response.pose.rotation.w = quat[3]
         self.get_logger().info('['+str(prim_pose.r[0])+','+str(prim_pose.r[1])+','+str(prim_pose.r[2])+','+str(prim_pose.r[3])+']')
-        
-        
-        # z_rotation = Rotation.from_euler('xyz', [0.0, 0.0, Rotation.from_quat(prim_pose.r).as_euler('xyz')[2]])
-        # grasp_translation = np.array(prim_pose.p) + \
-        #     z_rotation.apply(np.array([self.tube_diameter/2, -self.tube_diameter/2, self.tube_height]))
-        
-        # response : PoseRequest.Response = PoseRequest.Response()
-        # response.pose.translation.x = grasp_translation[0]
-        # response.pose.translation.y = grasp_translation[1]
-        # response.pose.translation.z = grasp_translation[2] + 0.02
-        # self.get_logger().info('['+str(response.pose.translation.x)+','+str(response.pose.translation.y )+','+str(response.pose.translation.z)+']')
-        
-        # response.pose.rotation.x = prim_pose.r[0]
-        # response.pose.rotation.y = prim_pose.r[1]
-        # response.pose.rotation.z = prim_pose.r[2]
-        # response.pose.rotation.w = prim_pose.r[3]
-        # self.get_logger().info('['+str(prim_pose.r[0])+','+str(prim_pose.r[1])+','+str(prim_pose.r[2])+','+str(prim_pose.r[3])+']')
         
         return response
         
@@ -413,6 +402,7 @@ def main():
         rclpy.init(args=None)
 
         node = IsaacSim('IsaacSim')
+        node.executor = MultiThreadedExecutor()
         node.runApp()
         
         #Exiting
