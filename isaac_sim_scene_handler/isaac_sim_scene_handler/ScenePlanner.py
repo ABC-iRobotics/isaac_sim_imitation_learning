@@ -345,8 +345,9 @@ class IsaacSim(Node):
         
         scale_factor = np.absolute(np.linalg.eigvals(axes))
         rotation = Rotation.from_matrix((axes.T/scale_factor).T).inv()
-        end_vec = rotation.apply(np.multiply(scale_factor, [extent if extent == max(half_extent) else 0.0 for extent in half_extent]))
         quat = rotation.as_quat()
+        end_vec = rotation.apply(np.multiply(scale_factor, [extent if extent == max(half_extent) else 0.0 for extent in half_extent]))
+        # end_vec = np.multiply(scale_factor, [extent if extent == max(half_extent) else 0.0 for extent in half_extent])
         
         self.get_logger().debug('\nAxes:\n' + str(axes) + '\nRotation:\n' + str(rotation.as_matrix()))
         self.get_logger().debug('End vector: ' + str(end_vec))

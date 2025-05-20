@@ -147,26 +147,6 @@ class AnalyticalSolver(Node):
                                     abs(vel - last_vel) < 1e-3 for pos, last_pos, vel, last_vel, joint in 
                                     zip(self.jointState.position, self.lastJointState.position, self.jointState.velocity, self.lastJointState.velocity, self.jointState.name) 
                                     if 'joint_' in joint) else False
-                
-    def targetPose(self):
-
-        def targetPoseCallback(self, future):
-            response = future.result()
-            self.targetPose = response.pose
-            self.get_logger().info('Received response')
-
-        self.get_logger().info('Calling RequestPose')
-        while not self.poseRequest.wait_for_service(timeout_sec=30.0):
-            if not rclpy.ok():
-                self.get_logger().error('Interruped while waiting for the server.')
-                return
-            else:
-                self.get_logger().info('Server not available, waiting again...')
-
-        self.request = PoseRequest.Request()
-        self.request.path = self.target
-        self.future = self.poseRequest.call_async(self.request)
-        self.future.add_done_callback(targetPoseCallback)
 
     def moveToTubeCallback(self, request : Trigger.Request, response : Trigger.Response):
         self.get_logger().info('Move to tube request recived')
@@ -174,8 +154,7 @@ class AnalyticalSolver(Node):
             # ~~~~~~~~~~~~~ Get grasp pose ~~~~~~~~~~~~ #
             request : PoseRequest.Request = PoseRequest.Request()
             request.path = '/World/Tubes/Tube_Target'
-            self.targetPose : Transform = self.callService(service=self.tubeGraspPoseRequest, request=request).pose
-            self.get_logger().debug(str(self.targetPose))
+            self.grasp_pose : Transform = self.callService(service=self.tubeGraspPoseRequest, request=request).pose
             
             # ~~~~~~~~~~ Get tube parameters ~~~~~~~~~~ #
             request : TubeParameter.Request = TubeParameter.Request()
@@ -195,7 +174,7 @@ class AnalyticalSolver(Node):
             request : GripperPose.Request = GripperPose.Request()
             request.known.x = self.tubeWidth
             self.gripper_goal : Pose2D = self.callService(service=self.gripperPoseRequest, request=request).pose
-            self.get_logger().info('Gripper width: ' + str(self.gripper_goal.x) + ' Gripper height: ' + str(self.gripper_goal.y))
+            self.get_logger().debug('Gripper width: ' + str(self.gripper_goal.x) + ' Gripper height: ' + str(self.gripper_goal.y))
             
             self.moveRobotGripper(np.deg2rad(-35), 200.0)
         
@@ -203,30 +182,32 @@ class AnalyticalSolver(Node):
             goal : PoseStamped = PoseStamped()
             goal.header.frame_id = "base"
             goal.header.stamp = self.get_clock().now().to_msg()
-        
-            tube_orientation = Rotation.from_quat([self.targetPose.rotation.x, self.targetPose.rotation.y, self.targetPose.rotation.z, self.targetPose.rotation.w])
-        
-            orientation : Rotation = Rotation.from_quat([self.rackPose.rotation.x, self.rackPose.rotation.y, self.rackPose.rotation.z, self.rackPose.rotation.w])
-        
-            orientation :  Rotation =   Rotation.from_euler('xyz', [np.pi, 0.0, 0.0]) * \
-                                        Rotation.from_euler('xyz', [0.0, 0.0, (np.pi - orientation.as_euler('xyz')[2]) if abs(orientation.as_euler('xyz')[2]) > abs(np.pi - orientation.as_euler('xyz')[2]) else -orientation.as_euler('xyz')[2]]) * \
-                                        Rotation.from_euler('xyz', [np.pi/2 + tube_orientation.as_euler('xyz')[0], -np.pi + tube_orientation.as_euler('xyz')[1], 0.0])
-        
-            gripper_translation = orientation.apply([0.0, 0.0, self.gripper_goal.y+0.2]) 
-        
+            
+            request : TubeParameter.Request = TubeParameter.Request()
+            request.path = '/World/Tubes/Tube_Target'
+            self.tubeDimensions : TubeParameter.Response = self.callService(service=self.tubeParameterRequest, request=request)
+            self.get_logger().debug(str(self.tubeDimensions))
+            tube_orientation : Rotation = Rotation.from_quat([self.tubeDimensions.pose.orientation.x, self.tubeDimensions.pose.orientation.y, self.tubeDimensions.pose.orientation.z, self.tubeDimensions.pose.orientation.w])
+            tube_orientation = Rotation.from_euler('xyz', [np.pi/2, 0.0, 0.0]) * tube_orientation
+            
+            rack_orientation : Rotation = Rotation.from_quat([self.rackPose.rotation.x, self.rackPose.rotation.y, self.rackPose.rotation.z, self.rackPose.rotation.w])
+
+            orientation : Rotation = \
+                Rotation.from_euler('xyz', [-(np.pi-tube_orientation.as_euler('xyz')[0]), tube_orientation.as_euler('xyz')[1], rack_orientation.as_euler('xyz')[2]])
+            
+            gripper_translation = orientation.apply([0.0, 0.0, self.gripper_goal.y+0.2])
+            
             goal.pose.orientation.x = orientation.as_quat()[0]
             goal.pose.orientation.y = orientation.as_quat()[1]
             goal.pose.orientation.z = orientation.as_quat()[2]
             goal.pose.orientation.w = orientation.as_quat()[3]
-            goal.pose.position.x = self.targetPose.translation.x - gripper_translation[0]
-            goal.pose.position.y = self.targetPose.translation.y - gripper_translation[1]
-            goal.pose.position.z = self.targetPose.translation.z - gripper_translation[2]
-        
-            self.get_logger().info('X: ' + str(goal.pose.position.x) + ' Y: ' + str(goal.pose.position.y) + ' Z: ' + str(goal.pose.position.z))
-        
-            self.moveRobotArm(pose=goal, cartesian=False)
-        
-            self.get_logger().info('Done joint space movement')
+            
+            goal.pose.position.x = self.grasp_pose.translation.x - gripper_translation[0]
+            goal.pose.position.y = self.grasp_pose.translation.y - gripper_translation[1]
+            goal.pose.position.z = self.grasp_pose.translation.z - gripper_translation[2]
+            goal.header.stamp = self.get_clock().now().to_msg()
+            
+            self.moveRobotArm(goal, cartesian=False, velocity=0.5, acceleration=0.5)
             
             sleep(0.1)
             rclpy.spin_once(self)
@@ -234,33 +215,33 @@ class AnalyticalSolver(Node):
         
             # ~~~~~~~~~~~~~ Approach tube ~~~~~~~~~~~~~ #
             gripper_translation = orientation.apply([0.0, 0.0, self.gripper_goal.y]) 
-            goal.pose.position.x = self.targetPose.translation.x - gripper_translation[0]
-            goal.pose.position.y = self.targetPose.translation.y - gripper_translation[1]
-            goal.pose.position.z = self.targetPose.translation.z - gripper_translation[2]
+            goal.pose.position.x = self.grasp_pose.translation.x - gripper_translation[0]
+            goal.pose.position.y = self.grasp_pose.translation.y - gripper_translation[1]
+            goal.pose.position.z = self.grasp_pose.translation.z - gripper_translation[2]
             goal.header.stamp = self.get_clock().now().to_msg()
         
-            self.moveRobotArm(pose=goal, cartesian=True)
+            self.moveRobotArm(pose=goal, cartesian=True, velocity=0.5, acceleration=0.5)
             
             sleep(1)
         
             # ~ Close gripper and use surface gripper ~ #
             self.moveRobotGripper(self.gripper_goal.theta, 200.0)
             
-            self.get_logger().info('Activating Surface Gripper')
+            self.get_logger().debug('Activating Surface Gripper')
             request : Trigger.Request = Trigger.Request()
             self.callService(service=self.closeGripper, request=request)
-            self.get_logger().info('Surface Gripper activated')
+            self.get_logger().debug('Surface Gripper activated')
             
             sleep(1)
             
             # ~~~~~~~~~~~~~ Pull out tube ~~~~~~~~~~~~~ #
             gripper_translation = orientation.apply([0.0, 0.0, self.gripper_goal.y + 0.2]) 
-            goal.pose.position.x = self.targetPose.translation.x - gripper_translation[0]
-            goal.pose.position.y = self.targetPose.translation.y - gripper_translation[1]
-            goal.pose.position.z = self.targetPose.translation.z - gripper_translation[2]
+            goal.pose.position.x = self.grasp_pose.translation.x - gripper_translation[0]
+            goal.pose.position.y = self.grasp_pose.translation.y - gripper_translation[1]
+            goal.pose.position.z = self.grasp_pose.translation.z - gripper_translation[2]
             goal.header.stamp = self.get_clock().now().to_msg()
             
-            self.moveRobotArm(goal, velocity=0.02, acceleration=0.02)
+            self.moveRobotArm(goal, velocity=0.05, acceleration=0.05)
             
             sleep(2)
             rclpy.spin_once(self)
@@ -269,20 +250,19 @@ class AnalyticalSolver(Node):
             request : PoseRequest.Request = PoseRequest.Request()
             request.path = '/World/Racks/Rack_Goal'
             rack_pose : Transform = self.callService(service=self.goalPoseRequest, request=request).pose
-            self.get_logger().info(str(rack_pose))
+            self.get_logger().debug(str(rack_pose))
             rack_orientation : Rotation = Rotation.from_quat([rack_pose.rotation.x, rack_pose.rotation.y, rack_pose.rotation.z, rack_pose.rotation.w])
             
             request : TubeParameter.Request = TubeParameter.Request()
             request.path = '/World/Tubes/Tube_Target'
             self.tubeDimensions : TubeParameter.Response = self.callService(service=self.tubeParameterRequest, request=request)
-            self.get_logger().info(str(self.tubeDimensions))
+            self.get_logger().debug(str(self.tubeDimensions))
             tube_orientation : Rotation = Rotation.from_quat([self.tubeDimensions.pose.orientation.x, self.tubeDimensions.pose.orientation.y, self.tubeDimensions.pose.orientation.z, self.tubeDimensions.pose.orientation.w])
             tube_orientation = Rotation.from_euler('xyz', [np.pi/2, 0.0, 0.0]) * tube_orientation
               
-            self.get_logger().info('Tube orientation: ' + str(tube_orientation.as_euler('xyz', degrees=True)))
-            self.get_logger().info('Rack orientation: ' + str(rack_orientation.as_euler('xyz', degrees=True)))
+            self.get_logger().debug('Tube orientation: ' + str(tube_orientation.as_euler('xyz', degrees=True)))
+            self.get_logger().debug('Rack orientation: ' + str(rack_orientation.as_euler('xyz', degrees=True)))
             
-                #Rotation.from_euler('xyz', [np.pi, 0.0, 0.0]) *\
             orientation : Rotation = \
                 Rotation.from_euler('xyz', [-(np.pi-tube_orientation.as_euler('xyz')[0]), tube_orientation.as_euler('xyz')[1], rack_orientation.as_euler('xyz')[2]])
             
@@ -298,8 +278,8 @@ class AnalyticalSolver(Node):
             goal.pose.position.z = rack_pose.translation.z - gripper_translation[2]
             goal.header.stamp = self.get_clock().now().to_msg()
             
-            self.get_logger().info('Rotation: ' + str(orientation.as_euler('xyz', degrees=True)))
-            self.get_logger().info('Target position: [' + str(rack_pose.translation.x - gripper_translation[0]) + ', ' +\
+            self.get_logger().debug('Rotation: ' + str(orientation.as_euler('xyz', degrees=True)))
+            self.get_logger().debug('Target position: [' + str(rack_pose.translation.x - gripper_translation[0]) + ', ' +\
                 str(rack_pose.translation.y - gripper_translation[1]) + ', ' +\
                 str(rack_pose.translation.z - gripper_translation[2]) + ']')
             self.moveRobotArm(goal, cartesian=False, velocity=0.5, acceleration=0.5)
@@ -311,15 +291,15 @@ class AnalyticalSolver(Node):
             goal.pose.position.z = rack_pose.translation.z - gripper_translation[2]
             goal.header.stamp = self.get_clock().now().to_msg()
         
-            self.moveRobotArm(pose=goal, cartesian=True, velocity=0.02, acceleration=0.02)
+            self.moveRobotArm(pose=goal, cartesian=True, velocity=0.05, acceleration=0.05)
             
             sleep(1)
             
             # ~ Open gripper and use surface gripper ~ #
-            self.get_logger().info('Activating Surface Gripper')
+            self.get_logger().debug('Activating Surface Gripper')
             request : Trigger.Request = Trigger.Request()
             self.callService(service=self.closeGripper, request=request)
-            self.get_logger().info('Surface Gripper activated')
+            self.get_logger().debug('Surface Gripper activated')
             
             self.moveRobotGripper(0.0, 200.0)
             
