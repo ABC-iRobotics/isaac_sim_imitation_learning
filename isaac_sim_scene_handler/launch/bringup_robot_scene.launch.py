@@ -167,6 +167,7 @@ def generate_launch_description():
         executable='tm_driver',
         # name='tm_driver',
         output='screen',
+        respawn=True,
         arguments=args,
         remappings=[
             ('/joint_states', '/joint_command'),
@@ -183,7 +184,7 @@ def generate_launch_description():
     rg6_node = Node(
         package='onrobot_rg_control',
         executable='OnRobotRGIsaacSimController',
-        name='OnRobotRGIsaacSimController',
+        name='OnRobotRGController',
         output='screen',
         arguments=[],
         parameters=[{
@@ -199,6 +200,15 @@ def generate_launch_description():
                 moveit_config.to_dict(),
                 {'use_sim_time': True},
                 ],
+    )
+    
+    trajector_recorder = Node(
+        package='analytical_solver',
+        executable='TrajectoryRecorder',
+        output='both',
+        parameters=[
+            {'use_sim_time': True},
+            ],
     )
     
 
@@ -222,8 +232,9 @@ def generate_launch_description():
             run_move_group_node,
             ros2_control_node,
             rg6_node,
-            analytical_solver
-            #joint_state_broadcaster_spawner,
-            #tm_arm_controller_spawner,
+            analytical_solver,
+            trajector_recorder,
+            # joint_state_broadcaster_spawner,
+            # tm_arm_controller_spawner,
         ]
     )

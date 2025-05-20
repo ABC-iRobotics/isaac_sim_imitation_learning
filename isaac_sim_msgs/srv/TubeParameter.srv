@@ -1,4 +1,4 @@
 string path
 ---
 geometry_msgs/Vector3 dimensions
-geometry_msgs/Quaternion axis
+geometry_msgs/Pose pose

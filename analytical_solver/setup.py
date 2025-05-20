@@ -23,7 +23,8 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'AnalyticalSolver = analytical_solver.AnalyticalSolver:main'
+            'AnalyticalSolver = analytical_solver.AnalyticalSolver:main',
+            'TrajectoryRecorder = analytical_solver.TrajectoryRecorder:main'
         ],
     },
 )
