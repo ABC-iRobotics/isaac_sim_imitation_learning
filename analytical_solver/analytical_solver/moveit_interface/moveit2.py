@@ -1206,7 +1206,8 @@ class MoveIt2:
         # 100ms sleep
         rate = self._node.create_rate(10)
         while not future.done():
-            rate.sleep()
+            sleep(0.1)
+            #rate.sleep()
             rclpy.spin_once(self._node)
 
         return self.get_compute_fk_result(future, fk_link_names=fk_link_names)
@@ -1301,7 +1302,8 @@ class MoveIt2:
         # 10ms sleep
         rate = self._node.create_rate(10)
         while not future.done():
-            rate.sleep()
+            sleep(0.1)
+            #rate.sleep()
             rclpy.spin_once(self._node)
 
         return self.get_compute_ik_result(future)
