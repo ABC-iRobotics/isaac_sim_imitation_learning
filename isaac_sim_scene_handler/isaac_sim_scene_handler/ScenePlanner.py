@@ -41,6 +41,7 @@ from isaacsim.storage.native import get_assets_root_path, is_file
 from isaacsim.core.utils.stage import is_stage_loading, get_current_stage
 from omni.isaac.core.utils.prims import get_prim_at_path
 import omni.isaac.core.utils.bounds as bounds_utils
+from omni.isaac.core.prims import XFormPrim
 
 # enable ROS2 bridge extension
 extensions.enable_extension("isaacsim.ros2.bridge")
@@ -57,6 +58,8 @@ if assets_root_path is None:
 
 class IsaacSim(Node):
 
+    robot_path = '/World/tm5_900'
+    
     rack_list : list = [
         '/World/Racks/Rack_Start',
         '/World/Racks/Rack_Goal',
@@ -88,7 +91,7 @@ class IsaacSim(Node):
     tube_storage_position_relative = np.array([0.04, 0.0, 0.0])
     tube_storage_rotation = Rotation.from_euler('xyz',[0, 0, 0])
     
-    workspace = np.array([[-0.45, 0.3, 0.01], [0.45, 0.6, 0.01]])
+    workspace = np.array([[-0.45, 0.4, 0.01], [0.45, 0.55, 0.01]])
     #rack_to_hole_translation = np.array([-0.0675, 0.065, 0.0])
     rack_to_hole_translation = np.array([-0.07, 0.06, 0.01])#np.array([-0.061, 0.04925, 0.1])
     hole_to_hole_translation = np.array([0.0, 0.03, 0.0])
@@ -124,11 +127,11 @@ class IsaacSim(Node):
         
         self.resetScene = self.create_service(Trigger, '/IsaacSim/ResetScene', self.resetSceneCallback, callback_group=self.mutual_group)
         self.newScene = self.create_service(Trigger, '/IsaacSim/NewScene', self.newSceneCallback, callback_group=self.mutual_group)
-        self.poseRequest = self.create_service(PoseRequest, '/IsaacSim/RequestPose', self.poseRequestCallback, callback_group=self.reentran_group)
-        self.tubeGraspPoseRequest = self.create_service(PoseRequest, '/IsaacSim/RequestTubeGraspPose', self.tubeGraspPoseRequestCallback, callback_group=self.reentran_group)
-        self.tubeParameterRequest = self.create_service(TubeParameter, '/IsaacSim/RequestTubeParameter', self.tubeParameterRequestCallback, callback_group=self.reentran_group)
-        self.tubeGoalPoseRequest = self.create_service(PoseRequest, '/IsaacSim/RequestTubeGoalPose', self.tubeGoalPoseRequestCallback, callback_group=self.reentran_group)
-        self.collisionCheckRequest = self.create_service(CollisionRequest, '/IsaacSim/RequestCollisionCheck', self.collisionCheckRequestCallback, callback_group=self.reentran_group)
+        self.poseRequestServer = self.create_service(PoseRequest, '/IsaacSim/RequestPose', self.poseRequestCallback, callback_group=self.reentran_group)
+        self.tubeGraspPoseRequestServer = self.create_service(PoseRequest, '/IsaacSim/RequestTubeGraspPose', self.tubeGraspPoseRequestCallback, callback_group=self.reentran_group)
+        self.tubeParameterRequestServer = self.create_service(TubeParameter, '/IsaacSim/RequestTubeParameter', self.tubeParameterRequestCallback, callback_group=self.reentran_group)
+        self.tubeGoalPoseRequestServer = self.create_service(PoseRequest, '/IsaacSim/RequestTubeGoalPose', self.tubeGoalPoseRequestCallback, callback_group=self.reentran_group)
+        self.collisionCheckRequestServer = self.create_service(CollisionRequest, '/IsaacSim/RequestCollisionCheck', self.collisionCheckRequestCallback, callback_group=self.reentran_group)
     
     def launchIsaacSim(self):
 
@@ -186,13 +189,16 @@ class IsaacSim(Node):
         self.world.stop()
         simulation_app.close()  # Cleanup application
 
-    def placeObject(self, prim_path, transform : _dynamic_control.Transform):
+    def setObjectKinematic(self, prim_path, value: bool):
         kinematic = self.stage.GetPrimAtPath(prim_path).GetAttribute('physics:kinematicEnabled')
-        kinematic.Set(True)
+        kinematic.Set(value)
+
+    def placeObject(self, prim_path, transform : _dynamic_control.Transform):
+        self.setObjectKinematic(prim_path, True)
         prim = self.dc.get_rigid_body(prim_path)
         self.dc.set_rigid_body_pose(prim, transform)
         simulation_app.update()
-        kinematic.Set(False) 
+        self.setObjectKinematic(prim_path, False)
         self.dc.set_rigid_body_angular_velocity(prim, Float3([0.0, 0.0, 0.0]))
         self.dc.set_rigid_body_linear_velocity(prim, Float3([0.0, 0.0, 0.0]))
 
@@ -288,24 +294,50 @@ class IsaacSim(Node):
             self.placeTubeInRack(rack_path, tube_list[i], slot)
             choices.remove(slot)
     
+    def realisticPose(self, prim_path) -> bool:
+        robot_position, robot_orientation = XFormPrim(self.robot_path).get_world_pose()
+        pose = self.poseRequest(prim_path).pose
+        if(
+            abs(pose.translation.x - robot_position[0]) < 1.0 and
+            abs(pose.translation.x - robot_position[1]) < 1.0 and
+            abs(pose.translation.x - robot_position[2]) < 1.0
+        ):
+            return True
+            
+        return False
+        
+    def collisionWithRacks(self, prim_path) -> bool:
+        self.clash_detector.set_scope('/World/Racks')
+        return self.clash_detector.is_prim_clashing(get_prim_at_path(prim_path))
+        
+    def collisionWithTubes(self, prim_path) -> bool:
+        self.clash_detector.set_scope('/World/Tubes')
+        return self.clash_detector.is_prim_clashing(get_prim_at_path(prim_path))
+        
     def newSceneCallback(self, request = Trigger.Request(), response = Trigger.Response()):
         self.get_logger().info('New scene request')
         
         self.clash_detector.set_scope('/World/Racks')
-        validStage = False
-        while not validStage:
-            self.resetSceneCallback()
-            validStage = True
-            for idx, rack_path in enumerate(self.rack_list):
-                self.placeInWorkspace(rack_path, random.uniform(0.0, 2*np.pi))
-                simulation_app.update()
-                if self.clash_detector.is_prim_clashing(get_prim_at_path(rack_path), query_name=f"rack_{idx}_query"):
-                    self.get_logger().info('Collision detected!')
-                    validStage = False
-                    
+        while True:
+            validStage = False
+            while not validStage:
+                self.resetSceneCallback()
+                validStage = True
+                for idx, rack_path in enumerate(self.rack_list):
+                    self.placeInWorkspace(rack_path, random.uniform(0.0, 2*np.pi))
+                    simulation_app.update()
+                    if self.clash_detector.is_prim_clashing(get_prim_at_path(rack_path), query_name=f"rack_{idx}_query"):
+                        self.get_logger().info('Collision detected!')
+                        validStage = False
+                        
+            self.clash_detector.set_scope('')
+            self.randomizeRackContent(self.rack_list[0], self.tube_list[:6], 1)
+            self.randomizeRackContent(self.rack_list[1], self.tube_list[6:11], 0)
+            
+            if all(not self.tube_usage[tube_path] or (self.realisticPose(tube_path) and self.collisionWithRacks(tube_path) and not self.collisionWithTubes(tube_path)) for tube_path in self.tube_list):
+                break
+        
         self.clash_detector.set_scope('')
-        self.randomizeRackContent(self.rack_list[0], self.tube_list[:6], 1)
-        self.randomizeRackContent(self.rack_list[1], self.tube_list[6:11], 0)
         
         self.get_logger().info('\nRacks:\n' + str(self.rack_usage) + '\nTubes:\n' + str(self.tube_usage))
         
@@ -314,21 +346,28 @@ class IsaacSim(Node):
         
         return response
 
-    def poseRequestCallback(self, request, response):
-        self.get_logger().info('Pose request')
-        prim = self.dc.get_rigid_body(request.path)
+    def poseRequest(self, prim_path):
+        prim = self.dc.get_rigid_body(prim_path)
         prim_pose = self.dc.get_rigid_body_pose(prim)
-        
+        response = PoseRequest.Response()
         response.pose.translation.x = prim_pose.p[0]
         response.pose.translation.y = prim_pose.p[1]
         response.pose.translation.z = prim_pose.p[2]
-        self.get_logger().debug('Position: ['+str(prim_pose.p[0])+','+str(prim_pose.p[1])+','+str(prim_pose.p[2])+']')
         
         response.pose.rotation.x = prim_pose.r[0]
         response.pose.rotation.y = prim_pose.r[1]
         response.pose.rotation.z = prim_pose.r[2]
         response.pose.rotation.w = prim_pose.r[3]
-        self.get_logger().debug('Rotation: ['+str(prim_pose.r[0])+','+str(prim_pose.r[1])+','+str(prim_pose.r[2])+','+str(prim_pose.r[3])+']')
+        
+        return response
+
+    def poseRequestCallback(self, request, response):
+        self.get_logger().info('Pose request')
+        
+        response = self.poseRequest(request.path)
+        
+        # self.get_logger().debug('Position: ['+str(response.translation.x)+','+str(response.translation.y)+','+str(response.translation.z)+']')
+        # self.get_logger().debug('Rotation: ['+str(response.rotation.x)+','+str(response.rotation.y)+','+str(response.rotation.z)+','+str(response.rotation.w)+']')
         
         return response
 

@@ -12,6 +12,7 @@ from rclpy.client import Client
 # ======================================================== #
 # ==================== Message Imports =================== #
 # ======================================================== #
+import rclpy.timer
 from std_msgs.msg import Bool
 from geometry_msgs.msg import Transform, Pose, PoseStamped, Pose2D, Vector3
 from sensor_msgs.msg import JointState
@@ -50,8 +51,8 @@ from typing import Optional
 from analytical_solver.moveit_interface.moveit2 import MoveIt2
 
 
-
-callback_group = ReentrantCallbackGroup()
+class DriverErrorException(Exception):
+    pass
 
 class AnalyticalSolver(Node):
 
@@ -66,11 +67,14 @@ class AnalyticalSolver(Node):
         self.robotState : RobotState
         self.gripperState : bool = False
         self.stopped = False
+        self.fault = False
+        self.solving = False
         self.lastJointState : JointState = JointState()
 
         self.mutually_exclusive_group = MutuallyExclusiveCallbackGroup()
         self.reentrant_group = ReentrantCallbackGroup()
         
+        self.rate = self.create_rate(100)
 
         self.robot_interface = MoveIt2(
             Node('move_group_interface'),
@@ -111,7 +115,7 @@ class AnalyticalSolver(Node):
             else:
                 self.get_logger().info('Servers not available, waiting again...')
 
-        self.move_to_tube = self.create_service(Trigger, '/AnalyticSolver/MoveToTube', self.moveToTubeCallback, callback_group=self.reentrant_group)
+        self.move_to_tube = self.create_service(Trigger, '/AnalyticSolver/SolveScene', self.moveToTubeCallback, callback_group=self.reentrant_group)
 
         self.robot_interface.move_to_configuration(self.ready1, ['joint_1', 'joint_2', 'joint_3', 'joint_4', 'joint_5', 'joint_6'])
 
@@ -120,16 +124,16 @@ class AnalyticalSolver(Node):
             self.get_logger().info(message)
         self.get_logger().info('Calling ' + str(service.srv_name) + ' service.')
         future  = service.call_async(request)
-        rclpy.spin_once(self)
+        self.rate.sleep()
         while not future.done():
-            rclpy.spin_once(self)
+            self.rate.sleep()
             sleep(0.01)
         while isinstance(future.result(), type(None)):
-            rclpy.spin_once(self)
+            self.rate.sleep()
             sleep(0.01)
-        rclpy.spin_once(self)
+        self.rate.sleep()
         sleep(0.01)
-        rclpy.spin_once(self)
+        self.rate.sleep()
         response = future.result()
         self.get_logger().info('Called' + str(service.srv_name) + ' successfully.')
         return response
@@ -142,15 +146,29 @@ class AnalyticalSolver(Node):
             if any(joint_name == 'joint_1' for joint_name in msg.name):
                 self.lastJointState = self.jointState
                 self.jointState = msg
-                #self.get_logger().info('[' + ', '.join([str(self.jointState.name[idx]) + ': ' + str(velocity) for idx, velocity in enumerate(self.jointState.velocity) if 'joint_' in self.jointState.name[idx]]) +']')
-                self.stopped = True if all(abs(pos - last_pos) < 1e-3 and 
+
+                # if len([i for i in self.jointState.name if 'joint_' in i]) > 0 and all(pos == 0.0 for pos, joint in 
+                # zip(self.jointState.position, self.jointState.name) if 'joint_' in joint) and self.solving:
+                #     raise DriverErrorException
+                    
+                self.stopped = True if len([i for i in self.jointState.name if 'joint_' in i]) > 0 and all(abs(pos - last_pos) < 1e-3 and 
                                     abs(vel - last_vel) < 1e-3 for pos, last_pos, vel, last_vel, joint in 
                                     zip(self.jointState.position, self.lastJointState.position, self.jointState.velocity, self.lastJointState.velocity, self.jointState.name) 
                                     if 'joint_' in joint) else False
+                                    
+                                    
+                self._done_gripper_execute = True if len([i for i in self.jointState.name if 'finger_joint' in i]) > 0 and all(abs(pos - last_pos) < 1e-5 and 
+                                    abs(vel - last_vel) < 1e-5 for pos, last_pos, vel, last_vel, joint in 
+                                    zip(self.jointState.position, self.lastJointState.position, self.jointState.velocity, self.lastJointState.velocity, self.jointState.name) 
+                                    if 'finger_joint' in joint) else False
 
     def moveToTubeCallback(self, request : Trigger.Request, response : Trigger.Response):
         self.get_logger().info('Move to tube request recived')
+        self.solving = True
         try:
+            # ~~~~~~~~~ Go home configuration ~~~~~~~~~ #
+            self.robot_interface.move_to_configuration(self.ready1, ['joint_1', 'joint_2', 'joint_3', 'joint_4', 'joint_5', 'joint_6'])
+        
             # ~~~~~~~~~~~~~ Get grasp pose ~~~~~~~~~~~~ #
             request : PoseRequest.Request = PoseRequest.Request()
             request.path = '/World/Tubes/Tube_Target'
@@ -172,11 +190,12 @@ class AnalyticalSolver(Node):
                 
             #  Set gripper to open and calculate grasp parameters  #
             request : GripperPose.Request = GripperPose.Request()
-            request.known.x = self.tubeWidth
+            request.known.x = self.tubeWidth + 0.01
             self.gripper_goal : Pose2D = self.callService(service=self.gripperPoseRequest, request=request).pose
             self.get_logger().debug('Gripper width: ' + str(self.gripper_goal.x) + ' Gripper height: ' + str(self.gripper_goal.y))
             
             self.moveRobotGripper(np.deg2rad(-35), 200.0)
+            sleep(1)
         
             # ~~~~~~~~~~~~ Move above tube ~~~~~~~~~~~~ #
             goal : PoseStamped = PoseStamped()
@@ -209,8 +228,8 @@ class AnalyticalSolver(Node):
             
             self.moveRobotArm(goal, cartesian=False, velocity=0.5, acceleration=0.5)
             
+            
             sleep(0.1)
-            rclpy.spin_once(self)
         
         
             # ~~~~~~~~~~~~~ Approach tube ~~~~~~~~~~~~~ #
@@ -232,7 +251,7 @@ class AnalyticalSolver(Node):
             self.callService(service=self.closeGripper, request=request)
             self.get_logger().debug('Surface Gripper activated')
             
-            sleep(1)
+            sleep(2)
             
             # ~~~~~~~~~~~~~ Pull out tube ~~~~~~~~~~~~~ #
             gripper_translation = orientation.apply([0.0, 0.0, self.gripper_goal.y + 0.2]) 
@@ -244,7 +263,6 @@ class AnalyticalSolver(Node):
             self.moveRobotArm(goal, velocity=0.05, acceleration=0.05)
             
             sleep(2)
-            rclpy.spin_once(self)
             
             # ~~~~~~~~~~~ Approach goal rack ~~~~~~~~~~ #
             request : PoseRequest.Request = PoseRequest.Request()
@@ -318,14 +336,18 @@ class AnalyticalSolver(Node):
             
             # ~~~~~~~~~ Go home configuration ~~~~~~~~~ #
             self.robot_interface.move_to_configuration(self.ready1, ['joint_1', 'joint_2', 'joint_3', 'joint_4', 'joint_5', 'joint_6'])
+
+            response.success = True
+            response.message = ''
             
+        except DriverErrorException as e:
+            self.get_logger().error(f"TM Driver ran into an error: {e}")
+            response.success = False
+            response.message = str(e)
         except Exception as e:
             self.get_logger().error(f"Service call failed: {e}")
-        
 
-        response.success = True
-        response.message = ''
-
+        self.solving = False
         return response
 
     def moveRobotArm(self,  pose : Pose | PoseStamped | None = None, 
@@ -355,9 +377,8 @@ class AnalyticalSolver(Node):
         self.robot_interface.wait_until_executed()
         self.get_logger().info('Execution done')
         sleep(0.1)
-        rclpy.spin_once(self)
         while not self.stopped:
-            rclpy.spin_once(self)
+            self.rate.sleep()
         self.stopped = False
         self.get_logger().info('Movement completed!')
 
@@ -366,15 +387,9 @@ class AnalyticalSolver(Node):
         goal : GripperCommand.Goal = GripperCommand.Goal()
         goal.command.position = joint_angle
         goal.command.max_effort = effort
-        self.send_goal_future = self.gripperController.send_goal_async(
-            goal, feedback_callback=self.feedback_callback)
-        self.send_goal_future.add_done_callback(self.goal_response_callback)
-        sleep(1)
-        self._done_gripper_execute = False
+        self.gripperController.send_goal(goal)
         while not self._done_gripper_execute:
-            sleep(0.1)
-            rclpy.spin_once(self)
-        self._done_gripper_execute = False
+            self.rate.sleep()
                 
     def goal_response_callback(self, future):
         goal_handle = future.result()

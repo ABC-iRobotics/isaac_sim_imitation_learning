@@ -2,6 +2,7 @@ import rclpy
 from rclpy.node import Node
 from rclpy.executors import MultiThreadedExecutor, ExternalShutdownException
 from rclpy.callback_groups import ReentrantCallbackGroup, MutuallyExclusiveCallbackGroup
+from rclpy.client import Client
 
 from sensor_msgs.msg import JointState, Image
 from std_msgs.msg import Bool
@@ -9,6 +10,7 @@ from std_msgs.msg import Bool
 from std_srvs.srv import Trigger
 
 import json, time
+from time import sleep
 
 class TrajectoryRecorder(Node):
     
@@ -17,6 +19,8 @@ class TrajectoryRecorder(Node):
         
         self.reentrantGroup = ReentrantCallbackGroup()
         self.mutuallyExclusiveGroup = MutuallyExclusiveCallbackGroup()
+        
+        self.rate = self.create_rate(100)
         
         self.robotJoints = ['joint_1', 'joint_2', 'joint_3', 'joint_4', 'joint_5', 'joint_6']
         self.gripperJoints = ['finger_joint']
@@ -33,7 +37,9 @@ class TrajectoryRecorder(Node):
         self.cameraSub = self.create_subscription(Image, '/rgb', self.cameraCallback, 10, callback_group=self.reentrantGroup)
         
         self.newSceneRequest = self.create_client(Trigger, '/IsaacSim/NewScene', callback_group=self.reentrantGroup)
-        self.solveSceneRequest = self.create_client(Trigger, '/AnalyticalSolver/SolveScene', callback_group=self.reentrantGroup)
+        self.solveSceneRequest = self.create_client(Trigger, '/AnalyticSolver/SolveScene', callback_group=self.reentrantGroup)
+        
+        self.getTrajectoryService = self.create_service(Trigger, '/TrajectoryRecorder/GetTrajectory', self.getTrajectoryServiceCallback)
         
         while   not self.newSceneRequest.wait_for_service(timeout_sec=5.0) and \
                 not self.solveSceneRequest.wait_for_service(timeout_sec=5.0):
@@ -61,6 +67,23 @@ class TrajectoryRecorder(Node):
     def gripperCallback(self, msg : Bool):
         self.grasp = msg
         
+    def getTrajectoryServiceCallback(self, request, response):
+        self.get_logger().info('Received getTrajectory request')
+        success = False
+        request : Trigger.Request = Trigger.Request()
+        
+        # while not success:
+        while True:
+            self.callService(service=self.newSceneRequest, request=request)
+            
+            success = self.callService(service=self.solveSceneRequest, request=request).success
+        
+            sleep(5)
+            
+        response.success = True
+        response.message = ''
+        return response
+        
     @property
     def record(self):
         return {
@@ -68,6 +91,26 @@ class TrajectoryRecorder(Node):
             
             "action": {}
         }
+
+    def callService(self, service : Client, request, message : str | None = None):
+        if isinstance(message, str):
+            self.get_logger().info(message)
+        self.get_logger().info('Calling ' + str(service.srv_name) + ' service.')
+        # future  = service.call_async(request)
+        # self.rate.sleep()
+        # while not future.done():
+        #     self.rate.sleep()
+        #     sleep(0.01)
+        # while isinstance(future.result(), type(None)):
+        #     self.rate.sleep()
+        #     sleep(0.01)
+        # self.rate.sleep()
+        # sleep(0.01)
+        # self.rate.sleep()
+        # response = future.result()
+        response = service.call(request)
+        self.get_logger().info('Called' + str(service.srv_name) + ' successfully.')
+        return response
 
     def record(self):
         """
