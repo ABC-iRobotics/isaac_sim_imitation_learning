@@ -1,0 +1,3 @@
+[submodule "lerobot"]
+	path = analytical_solver/analytical_solver/lerobot
+	url = https://github.com/huggingface/lerobot.git

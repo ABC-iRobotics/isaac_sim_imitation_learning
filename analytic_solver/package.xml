@@ -1,8 +1,8 @@
 <?xml version="1.0"?>
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
-  <name>analytical_solver</name>
-  <version>0.0.0</version>
+  <name>analytic_solver</name>
+  <version>1.0.0</version>
   <description>TODO: Package description</description>
   <maintainer email="andrasmakany@gmail.com">user</maintainer>
   <license>MIT</license>
@@ -13,6 +13,7 @@
   <exec_depend>moveit_msgs</exec_depend>
   <exec_depend>isaac_sim_msgs</exec_depend>
   <exec_depend>onrobot_msgs</exec_depend>
+  <exec_depend>tm5-900_rg6_moveit_config></exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>
