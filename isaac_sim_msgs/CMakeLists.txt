@@ -11,6 +11,8 @@ find_package(ament_cmake REQUIRED)
 # further dependencies manually.
 # find_package(<dependency> REQUIRED)
 
+find_package(std_msgs REQUIRED)
+find_package(sensor_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 
@@ -18,7 +20,10 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/PoseRequest.srv"
   "srv/TubeParameter.srv"
   "srv/CollisionRequest.srv"
-  DEPENDENCIES geometry_msgs
+  "srv/Demonstration.srv"
+  "srv/SetJoint.srv"
+  "action/Demonstration.action"
+  DEPENDENCIES std_msgs geometry_msgs sensor_msgs
 )
 
 if(BUILD_TESTING)

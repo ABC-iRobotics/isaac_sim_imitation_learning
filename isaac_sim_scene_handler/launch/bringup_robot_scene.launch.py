@@ -54,10 +54,24 @@ def generate_launch_description():
     ros_controller_path = 'config/ros2_controllers.yaml'
     joint_limits_path = 'config/joint_limits.yaml'
 
+
+    # * When using an external robot (or simulator), use mock_components
+    ros2_control_hardware_type = DeclareLaunchArgument(
+        "ros2_control_hardware_type",
+        default_value="mock_components",
+        description="ROS2 control hardware interface type to use for the launch file -- possible values: [mock_components, isaac]",
+    )
+
     # MoveIt Configuration
     moveit_config = (
         MoveItConfigsBuilder(tm_robot_type, package_name="tm5-900_rg6_moveit_config")
-        .robot_description(file_path=xacro_path)
+        .robot_description(file_path=xacro_path,
+            mappings={
+                "ros2_control_hardware_type": LaunchConfiguration(
+                    "ros2_control_hardware_type"
+                )
+            },
+        )
         .robot_description_semantic(file_path=srdf_path)
         .trajectory_execution(file_path=controller_path)
         .joint_limits(file_path=joint_limits_path)
@@ -170,7 +184,7 @@ def generate_launch_description():
         respawn=True,
         arguments=args,
         remappings=[
-            ('/joint_states', '/joint_command'),
+            ('/joint_states', '/isaac_joint_commands'),
         ]
     )
     
@@ -180,21 +194,39 @@ def generate_launch_description():
         default_value=TextSubstitution(text='rg6')
     )
     
+    control_arg = DeclareLaunchArgument(
+        'control',
+        default_value=TextSubstitution(text='isaac')
+    )
+    
+    rg_joint_state_sub_arg = DeclareLaunchArgument(
+        'joint_states_sub_name',
+        default_value=TextSubstitution(text='joint_states')
+    )
+    
+    rg_isaac_joint_states_pub_arg = DeclareLaunchArgument(
+        'isaac_joint_states_pub_name',
+        default_value=TextSubstitution(text='isaac_joint_commands')
+    )
+    
     #Gripper node interfacing MoveIt2 and Isaac Sim
     rg6_node = Node(
         package='onrobot_rg_control',
-        executable='OnRobotRGIsaacSimController',
-        name='OnRobotRGController',
+        executable='OnRobotRGSimpleControllerServer',
+        name='OnRobotRGControllerServer',
         output='screen',
         arguments=[],
         parameters=[{
             '/onrobot/gripper': LaunchConfiguration('gripper'),
-        }]
+            '/onrobot/control': LaunchConfiguration('control'),
+            '/onrobot/joint_states_sub_name' : LaunchConfiguration('joint_states_sub_name'),
+            '/onrobot/isaac_joint_states_pub_name' : LaunchConfiguration('isaac_joint_states_pub_name')
+        }],
     )
     
-    analytical_solver = Node(
-            package='analytical_solver',
-            executable='AnalyticalSolver',
+    analytic_solver = Node(
+            package='analytic_solver',
+            executable='AnalyticSolver',
             output='both',
             parameters=[
                 moveit_config.to_dict(),
@@ -203,7 +235,7 @@ def generate_launch_description():
     )
     
     trajector_recorder = Node(
-        package='analytical_solver',
+        package='analytic_solver',
         executable='TrajectoryRecorder',
         output='both',
         parameters=[
@@ -217,6 +249,10 @@ def generate_launch_description():
         [
             # ~~~~~~~~~~~~~~~ Arguments ~~~~~~~~~~~~~~~ #
             gripper_arg,
+            control_arg,
+            rg_joint_state_sub_arg,
+            rg_isaac_joint_states_pub_arg,
+            ros2_control_hardware_type,
             
             # ~~~~~~~~~~~~~~~~ Includes ~~~~~~~~~~~~~~~ #
             IncludeLaunchDescription(
@@ -225,14 +261,14 @@ def generate_launch_description():
 
            # ~~~~~~~~~~~~~~~~~ Nodes ~~~~~~~~~~~~~~~~~ #
             launch_ros.actions.SetParameter(name='use_sim_time', value=True),
-            rviz_node,
+            #rviz_node,
             tm_driver_node,
             static_tf,
             robot_state_publisher,
             run_move_group_node,
             ros2_control_node,
             rg6_node,
-            analytical_solver,
+            analytic_solver,
             trajector_recorder,
             # joint_state_broadcaster_spawner,
             # tm_arm_controller_spawner,
