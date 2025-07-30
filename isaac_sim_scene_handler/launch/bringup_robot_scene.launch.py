@@ -180,7 +180,7 @@ def generate_launch_description():
         package='tm_driver',
         executable='tm_driver',
         # name='tm_driver',
-        output='screen',
+        output='log',
         respawn=True,
         arguments=args,
         remappings=[
@@ -199,28 +199,33 @@ def generate_launch_description():
         default_value=TextSubstitution(text='isaac')
     )
     
-    rg_joint_state_sub_arg = DeclareLaunchArgument(
-        'joint_states_sub_name',
-        default_value=TextSubstitution(text='joint_states')
+    offset_arg = DeclareLaunchArgument(
+        'offset',
+        default_value='5'
     )
     
-    rg_isaac_joint_states_pub_arg = DeclareLaunchArgument(
-        'isaac_joint_states_pub_name',
-        default_value=TextSubstitution(text='isaac_joint_commands')
+    isaac_joint_states_arg = DeclareLaunchArgument(
+        'isaac_joint_states',
+        default_value='/joint_states'
+    )
+    
+    isaac_joint_commands_arg = DeclareLaunchArgument(
+        'isaac_joint_commands',
+        default_value='/isaac_joint_commands'
     )
     
     #Gripper node interfacing MoveIt2 and Isaac Sim
     rg6_node = Node(
         package='onrobot_rg_control',
-        executable='OnRobotRGSimpleControllerServer',
+        executable='OnRobotRGControllerServer',
         name='OnRobotRGControllerServer',
         output='screen',
         arguments=[],
         parameters=[{
             '/onrobot/gripper': LaunchConfiguration('gripper'),
             '/onrobot/control': LaunchConfiguration('control'),
-            '/onrobot/joint_states_sub_name' : LaunchConfiguration('joint_states_sub_name'),
-            '/onrobot/isaac_joint_states_pub_name' : LaunchConfiguration('isaac_joint_states_pub_name')
+            '/onrobot/isaac_joint_states': LaunchConfiguration('isaac_joint_states'),
+            '/onrobot/isaac_joint_commands': LaunchConfiguration('isaac_joint_commands'),
         }],
     )
     
@@ -250,8 +255,9 @@ def generate_launch_description():
             # ~~~~~~~~~~~~~~~ Arguments ~~~~~~~~~~~~~~~ #
             gripper_arg,
             control_arg,
-            rg_joint_state_sub_arg,
-            rg_isaac_joint_states_pub_arg,
+            offset_arg,
+            isaac_joint_states_arg,
+            isaac_joint_commands_arg,
             ros2_control_hardware_type,
             
             # ~~~~~~~~~~~~~~~~ Includes ~~~~~~~~~~~~~~~ #
