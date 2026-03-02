@@ -7,7 +7,7 @@ sensor_msgs/JointState arm_state
 sensor_msgs/JointState gripper_action
 sensor_msgs/JointState gripper_state
 
-sensor_msgs/Image camera
+sensor_msgs/Image[] camera
 
 
 bool success
@@ -21,7 +21,7 @@ sensor_msgs/JointState arm_state
 sensor_msgs/JointState gripper_action
 sensor_msgs/JointState gripper_state
 
-sensor_msgs/Image camera
+sensor_msgs/Image[] camera
 
 bool success
 string message

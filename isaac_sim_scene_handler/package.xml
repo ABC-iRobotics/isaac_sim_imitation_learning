@@ -6,7 +6,7 @@
   <description>TODO: Package description</description>
   <maintainer email="andrasmakany@gmail.com">user</maintainer>
   <license>MIT</license>
-  
+
   <exec_depend>isaac_sim_msgs</exec_depend>
 
   <test_depend>ament_copyright</test_depend>

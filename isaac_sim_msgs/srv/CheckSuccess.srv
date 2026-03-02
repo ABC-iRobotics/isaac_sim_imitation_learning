@@ -1,0 +1,4 @@
+int id
+---
+string message
+bool success

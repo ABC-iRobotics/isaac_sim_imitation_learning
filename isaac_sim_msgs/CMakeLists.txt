@@ -17,12 +17,21 @@ find_package(geometry_msgs REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
-  "srv/PoseRequest.srv"
-  "srv/TubeParameter.srv"
-  "srv/CollisionRequest.srv"
+  # Messages
+
+  # Services
+  "srv/Pose.srv"
+  "srv/Dimensions.srv"
+  "srv/Collision.srv"
   "srv/Demonstration.srv"
   "srv/SetJoint.srv"
+  "srv/Attribute.srv"
+  "srv/Prompt.srv"
+
+  # Actions
   "action/Demonstration.action"
+
+  # Dependencies
   DEPENDENCIES std_msgs geometry_msgs sensor_msgs
 )
 

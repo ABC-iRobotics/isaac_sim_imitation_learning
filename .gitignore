@@ -12,11 +12,14 @@ devel/
 logs/
 CATKIN_IGNORE
 
+#Submodules
+modules/
+
 # OS files
 .DS_Store
 Thumbs.db
 
-# Linux files 
+# Linux files
 *~
 .fuse_hidden*
 .directory
@@ -29,9 +32,10 @@ Thumbs.db
 .vscode/
 *.ipch
 .idea
-__pycache__/
+*__pycache__/
 *.pyc
 *.cpython-37.pyc
+*.cpython-310.pyc
 
 # Compiled or Executables
 *.com
@@ -57,7 +61,7 @@ __pycache__/
 *.asv
 *.autosave
 
-# Logs and databases 
+# Logs and databases
 *.log
 *.sqlite
 
@@ -83,4 +87,6 @@ eggs
 __pycache__
 CATKIN_IGNORE
 
-analytic_solver/analytic_solver/lerobot/**
+*.lock
+env_isaaclab
+cli_runner/

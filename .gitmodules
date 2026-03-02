@@ -1,3 +1,10 @@
-[submodule "lerobot"]
-	path = analytical_solver/analytical_solver/lerobot
+[submodule "modules/pymoveit2"]
+	path = modules/pymoveit2
+	url = https://github.com/AndrejOrsula/pymoveit2.git
+[submodule "modules/lerobot"]
+	path = modules/lerobot
 	url = https://github.com/huggingface/lerobot.git
+[submodule "modules/rclpy"]
+	path = modules/rclpy
+	url = https://github.com/ros2/rclpy.git
+	branch = humble

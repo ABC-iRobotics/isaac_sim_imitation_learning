@@ -60,7 +60,7 @@ Using a separate terminal the demonstration generation can be called via a ROS 2
 ros2 service call /TrajectoryRecorder/GetTrajectory isaac_sim_msgs/srv/Demonstration "{amount:<num_of_demos>, path: '<save_path>'}"
 ```
 
-where *num_of_demos* is the number of requested successfull demonstrations and *save_path* is the absolute path ("~" can be used) where the completed demonstrations are saved.
+where *num_of_demos* is the number of requested successful demonstrations and *save_path* is the absolute path ("~" can be used) where the completed demonstrations are saved.
 
 ## Troubleshooting
 
