@@ -13,7 +13,7 @@ The resulting demonstrations are saved natively in the [LeRobot dataset format](
 ## Repository Structure
 This repository contains the full GUIDE framework and serves as the main entry point:
 - `guide_core`: Core simulation orchestration and ROS 2 bridging.
-- `guide_exo`: Task execution and composite node structure for logic flow.
+- `guide_ex`: Task execution and composite node structure for logic flow.
 - `guide_msgs`: Standardized message interfaces.
 - `guide_tasks`: Contains specific tasks (e.g., `block_bin`).
 - `modules`: Git submodules for external robot configurations (e.g., `irob_franka_ros2`).

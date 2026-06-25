@@ -1,11 +1,7 @@
-from enum import Enum
-from enum import IntEnum
+from dataclasses import dataclass, field
+from enum import Enum, IntEnum
+from typing import Any, Dict
 
-from dataclasses import dataclass
-from dataclasses import field
-
-from typing import Any
-from typing import Dict
 
 class Layer(IntEnum):
     UTILITY = -1
@@ -17,16 +13,19 @@ class Layer(IntEnum):
     TASK = 5
     PROCEDURE = 6
     SERVICE = 7
-    
+
+
 class DemoStatus(Enum):
-    PERFECT = 'perfect'
-    RECOVERY = 'recovery'
-    FAILURE = 'failure'
-    
+    PERFECT = "perfect"
+    RECOVERY = "recovery"
+    FAILURE = "failure"
+
+
 class ExecutionMode(str, Enum):
     NORMAL = "normal"
     CONDITION = "condition"
     LOOP = "loop"
+
 
 @dataclass
 class ExecutionResult:

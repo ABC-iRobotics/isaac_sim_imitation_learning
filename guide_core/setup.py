@@ -37,7 +37,7 @@ setup(
     entry_points={
         "console_scripts": [
             "GUIDE = guide_core.ros.guide_ros:ros_entry_point",
-            "guide_exo_test = guide_core.guide_exo_test:main",
+            "guide_ex_test = guide_core.guide_ex_test:main",
             "guide_smolvla_test = guide_core.run_smolvla:main",
         ],
     },
