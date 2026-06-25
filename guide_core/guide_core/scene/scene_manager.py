@@ -71,40 +71,52 @@ class SceneManager:
                 else:
                     scene_class = self.import_class_from_path(package_name, "scene.py", "Scene")
             else:
-                # Try to resolve as a Python or ROS package
-                spec = importlib.util.find_spec(package_name)
-                if spec is not None:
-                    # 2. Python package
+                # Setup ROS 2 Flag
+                ros2_enabled = False
+                try:
+                    from ament_index_python.packages import get_package_share_directory
+
+                    ros2_enabled = True
+                except ImportError:
+                    pass
+
+                # 2. ROS Package (Primary if ROS 2 is enabled)
+                if ros2_enabled:
                     try:
-                        module = importlib.import_module(f"{package_name}.scene")
-                        scene_class = getattr(module, "Scene")
-                        if hasattr(module, "__file__") and module.__file__:
-                            scene_path = str(Path(module.__file__).parent)
-                        elif spec.submodule_search_locations:
-                            scene_path = spec.submodule_search_locations[0]
-                        else:
-                            scene_path = str(Path(spec.origin).parent)
-                    except ImportError:
+                        share_dir = get_package_share_directory(package_name)
+                        # According to standard ROS 2 python package install structure (e.g. block_bin),
+                        # the python files are copied/symlinked into share_dir / package_name
+                        ros_pkg_path = Path(share_dir) / package_name
+                        scene_file_path = ros_pkg_path / "scene.py"
+
+                        if scene_file_path.exists():
+                            scene_class = self.import_class_from_path(
+                                str(ros_pkg_path), "scene.py", "Scene"
+                            )
+                            scene_path = share_dir
+                    except Exception:
                         pass
 
+                # 3. Python package (Fallback)
                 if scene_class is None:
-                    try:
-                        # 3. ROS Package
-                        from ament_index_python.packages import (
-                            get_package_share_directory,
-                        )
+                    spec = importlib.util.find_spec(package_name)
+                    if spec is not None:
+                        try:
+                            module = importlib.import_module(f"{package_name}.scene")
+                            scene_class = getattr(module, "Scene")
+                            if hasattr(module, "__file__") and module.__file__:
+                                scene_path = str(Path(module.__file__).parent)
+                            elif spec.submodule_search_locations:
+                                scene_path = spec.submodule_search_locations[0]
+                            else:
+                                scene_path = str(Path(spec.origin).parent)
+                        except ImportError:
+                            pass
 
-                        share_dir = get_package_share_directory(package_name)
-                        module = importlib.import_module(f"{package_name}.scene")
-                        scene_class = getattr(module, "Scene")
-                        scene_path = share_dir
-                    except Exception:
-                        raise ImportError(
-                            f"Failed to load Scene class for {package_name}. It is not a valid path, python package, or ROS package."
-                        )
-
-            if scene_class is None:
-                raise ImportError(f"Failed to load Scene class for {package_name}")
+                if scene_class is None:
+                    raise ImportError(
+                        f"Failed to load Scene class for {package_name}. It is not a valid path, ROS package, or python package."
+                    )
 
             id = len(self._scenes)
             scene = scene_class(

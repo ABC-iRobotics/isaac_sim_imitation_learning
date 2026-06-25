@@ -3,8 +3,13 @@ import os
 import ament_index_python.packages
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import IncludeLaunchDescription
+from launch.actions import (
+    DeclareLaunchArgument,
+    IncludeLaunchDescription,
+    OpaqueFunction,
+)
 from launch.launch_description_sources import PythonLaunchDescriptionSource
+from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
 # Monkey-patch get_package_share_directory to isolate the submodule from workspace collisions
@@ -19,7 +24,7 @@ def _custom_get_pkg_share_dir(package_name):
     return _original_get_pkg_share_dir(package_name)
 
 
-ament_index_python.packages.get_package_share_directory = _custom_get_pkg_share_dir
+# ament_index_python.packages.get_package_share_directory = _custom_get_pkg_share_dir
 
 
 def load_file(package_name, file_path):
@@ -33,9 +38,9 @@ def load_file(package_name, file_path):
         return None
 
 
-def generate_launch_description():
+def generate_nodes(context, *args, **kwargs):
 
-    num_env = 1
+    num_env = int(LaunchConfiguration("num_env").perform(context))
 
     move_groups = []
 
@@ -75,5 +80,16 @@ def generate_launch_description():
                 ],
             )
         )
+    return move_groups + testers
 
-    return LaunchDescription(move_groups + testers)
+
+def generate_launch_description():
+
+    return LaunchDescription(
+        [
+            DeclareLaunchArgument(
+                "num_env", default_value="1", description="Number of environments to launch"
+            ),
+            OpaqueFunction(function=generate_nodes),
+        ]
+    )

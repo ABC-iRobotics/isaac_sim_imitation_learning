@@ -531,6 +531,7 @@ def main():
         fallback_planner_id="SPARStwokConfigDefault",
         max_velocity=1.0,
         max_acceleration=1.0,
+        gripper_action_type=ActionType.JOINT_POSITION,
     )
     config.cameras = {
         "cam_base": ROS2CameraConfig(
