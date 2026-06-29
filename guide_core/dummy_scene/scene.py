@@ -14,7 +14,7 @@ class Scene(SceneOrchestrator):
     def is_success_postprocess(self, result):
         return True
 
-    def randomize_preprocess(self, instructions):
+    def randomize_preprocess(self, randomizer):
         return []
 
     def randomize_postprocess(self, result):

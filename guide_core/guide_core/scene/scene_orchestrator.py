@@ -12,6 +12,14 @@ from scipy.spatial.transform import Rotation as R
 
 from guide_core.scene.scene_recorder import SceneRecorder
 from guide_core.types.geometry import Point, Pose, Rotation
+from guide_core.types.randomization import (
+    RandomizationRecord,
+    Randomizer,
+    SeedTree,
+    draw_instructions,
+    pose_from_yaml,
+)
+from guide_core.types.scene_context import SceneContext
 from guide_core.types.scene_state import SceneState
 
 logger = logging.getLogger("SceneOrchestrator")
@@ -45,6 +53,7 @@ class SceneOrchestrator(ABC):
         randomize_path: str = "/config/randomize.yaml",
         success_path: str = "/config/success.yaml",
         logger: Any = None,
+        master_seed: Optional[int] = None,
     ):
         self._scene_id = scene_id
         self._sim_id = sim_id
@@ -84,6 +93,15 @@ class SceneOrchestrator(ABC):
 
         # Getting success.yaml
         self.success_instructions = self.parse_instruction(Path(f"{path}/{success_path}"))
+
+        # Single RNG authority for this scene (master seed injected at
+        # registration, else auto from system entropy -- captured + logged).
+        self._seed_tree = SeedTree.create(master_seed)
+        self._episode_index = 0
+        self._last_context: Optional[SceneContext] = None
+        self._logger.info(
+            f"[SceneOrchestrator] scene {self._scene_id} master seed = {self._seed_tree.master}"
+        )
 
         self.state = SceneState.IDLE
 
@@ -183,47 +201,23 @@ class SceneOrchestrator(ABC):
                     else:
                         instruction["kwargs"][key] = f"/Scene_{self._scene_id}{value}"
                 if key == "pose":
-                    # Position
-                    position_dict = instruction["kwargs"]["pose"].get("position", None)
-                    if position_dict is None:
-                        position_dict = {"value": [0.0, 0.0, 0.0]}
-                    position_base = np.array(position_dict.get("value", [0.0, 0.0, 0.0]))
+                    # The randomization spec (PoseDist) is owned by the
+                    # randomization package; the Randomizer draws it in
+                    # randomize(). We attach the spec to the instruction and put
+                    # a concrete *base* Pose in kwargs for immediate execution.
+                    instruction["pose_dist"] = pose_from_yaml(instruction["kwargs"]["pose"])
 
-                    randomize = position_dict.get("random", None)
-                    if randomize is None:
-                        randomize_low = None
-                        randomize_high = None
-                    else:
-                        randomize_low = np.array(randomize.get("low", [0.0, 0.0, 0.0]))
-                        randomize_high = np.array(randomize.get("high", [0.0, 0.0, 0.0]))
-
-                    position = Point(
-                        coordinates=position_base,
-                        random_low=randomize_low,
-                        random_high=randomize_high,
+                    pose_spec = instruction["kwargs"]["pose"]
+                    position_base = np.array(
+                        (pose_spec.get("position") or {}).get("value", [0.0, 0.0, 0.0])
                     )
-
-                    # Orientation
-                    orientation_dict = instruction["kwargs"]["pose"].get("orientation", None)
-                    if orientation_dict is None:
-                        orientation_dict = {"value": [0.0, 0.0, 0.0]}
-                    orientation_base = np.array(orientation_dict.get("value", [0.0, 0.0, 0.0]))
-
-                    randomize = orientation_dict.get("random", None)
-                    if randomize is None:
-                        randomize_axis = None
-                        randomize_angle = None
-                    else:
-                        randomize_axis = np.array(randomize.get("axis", [0.0, 0.0, 0.0]))
-                        randomize_angle = np.array(randomize.get("angle", 0.0))
-
-                    orientation = Rotation(
-                        R.from_euler("xyz", orientation_base, degrees=True),
-                        random_axis=randomize_axis,
-                        random_max_angle=randomize_angle,
+                    orientation_base = np.array(
+                        (pose_spec.get("orientation") or {}).get("value", [0.0, 0.0, 0.0])
                     )
-
-                    instruction["kwargs"][key] = Pose(position, orientation)
+                    instruction["kwargs"][key] = Pose(
+                        Point(position_base),
+                        Rotation(R.from_euler("xyz", orientation_base, degrees=True)),
+                    )
             instruction_list.append(instruction)
 
         assert instruction_list is not None
@@ -239,7 +233,7 @@ class SceneOrchestrator(ABC):
         raise NotImplementedError("Reset postprocess function is not implemented for this scene.")
 
     @abstractmethod
-    def randomize_preprocess(self, instructions):
+    def randomize_preprocess(self, randomizer):
         raise NotImplementedError(
             "Randomize preprocess function is not implemented for this scene."
         )
@@ -261,6 +255,43 @@ class SceneOrchestrator(ABC):
     @abstractmethod
     def check_warmup(self):
         raise NotImplementedError("Check warmup function is not implemented for this scene.")
+
+    def randomize(self, *, seed=None, inject=None) -> SceneContext:
+        """Draw this episode's randomization deterministically and capture it.
+
+        Builds the per-episode generator from the scene's SeedTree, draws every
+        randomize instruction's PoseDist into a concrete Pose (kwargs['pose']),
+        lets the subclass draw its own discrete choices via
+        randomize_preprocess(randomizer), and returns the SceneContext (identity
+        + realized RandomizationRecord). If ``inject`` is given, drawn values
+        come from it instead of the generator.
+        """
+        if seed is not None:
+            rng, used = self._seed_tree.generator(int(seed))
+        else:
+            rng, used = self._seed_tree.generator(self._scene_id, self._episode_index)
+
+        record = RandomizationRecord(seed=used)
+        randomizer = Randomizer(rng, record, inject=inject)
+
+        draw_instructions(self.randomize_instructions, randomizer, self._pose_from_vec7)
+
+        try:
+            self.randomize_preprocess(randomizer)
+        except NotImplementedError:
+            pass
+
+        self._last_context = SceneContext(
+            scene_id=self._scene_id, episode_index=self._episode_index, record=record
+        )
+        self._episode_index += 1
+        return self._last_context
+
+    @staticmethod
+    def _pose_from_vec7(vec) -> Pose:
+        v = np.asarray(vec, dtype=float).reshape(7)
+        # vec is [x, y, z, w, x, y, z]; SciPy wants quat [x, y, z, w]
+        return Pose(Point(v[:3]), Rotation(R.from_quat([v[4], v[5], v[6], v[3]])))
 
     def create_render_products(self, rep):
         dataset_cfg = self._config.get("dataset", {})
