@@ -74,6 +74,24 @@ In case of any issues, check the official resources:
 
 [András Makány](https://github.com/andras-makany) - PhD student at Obuda University
 
+## Citation (BibTeX)
+```
+@INPROCEEDINGS{MakanyGalambos2025a,
+  author={Makány, András and Galambos, Péter},
+  booktitle={2025 IEEE 23rd Jubilee International Symposium on Intelligent Systems and Informatics (SISY)}, 
+  title={A Framework for Generating Synthetic Expert Demonstrations in Digital Twin-based Robot Learning}, 
+  year={2025},
+  month={sep},
+  pages={51--56},
+  address={Subotica, Serbia},
+  doi={10.1109/SISY67000.2025.11205394}
+}
+```
+
+## Acknowledgements
+
+Program of the Ministry for Culture and Innovation from the source of the National Research, Development and Innovation Fund.Project 2024-1.2.3-HU-RIZONT-00069 has been implemented with support provided by the Ministry of Culture and Innovation of Hungary from the National Research, Development, and Innovation Fund, financed under the 2024-1.2.3-HU-RIZONT funding scheme.
+
 ## License
 
 This software is released under the GNU General Public License v3.0, see [LICENSE](./LICENSE).
