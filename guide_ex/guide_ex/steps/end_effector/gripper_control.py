@@ -1,3 +1,4 @@
+import time
 from typing import Dict
 
 from irob_lerobot_ros.config import ActionType
@@ -10,6 +11,14 @@ from guide_ex.core.states import DemoStatus, ExecutionResult, Layer
 
 class SetGripperState(BaseNode):
     level = Layer.STEP
+
+    # Seconds to let the gripper/arm settle after a grasp or release before the
+    # next step (e.g. planning) runs. Closing onto the cube injects contact forces
+    # that shift the arm joints; planning immediately snapshots a still-moving arm,
+    # so move_group later rejects the trajectory ("start point deviates from
+    # current robot state"). Waiting for the gripper action to finish and then
+    # settling makes the next plan start from a stable, grasped state.
+    SETTLE_SECONDS = 1.0
 
     def __init__(self, alias=None, dynamic_map=None, static_args=None, output_map=None):
         super().__init__("GripperControl", alias, dynamic_map, static_args)
@@ -41,7 +50,17 @@ class SetGripperState(BaseNode):
                 success = robot.send_action(
                     action={f"{joint_name}.pos": target_position}, wait_for_execution=False
                 )
-                # TODO: Add wait_for_execution logic and proper success checking based on robot response
+                # Wait for the grasp/release to physically settle before the next
+                # step (planning) starts, so it snapshots a stable arm rather than
+                # one still reacting to the new contact forces. (wait_for_execution
+                # is left False: awaiting the gripper action deadlocked the node's
+                # executor for ~23s, so a fixed settle is used instead.)
+                self.logger.info(
+                    f"Waiting {self.SETTLE_SECONDS:.2f}s for gripper/arm to settle "
+                    f"before continuing."
+                )
+                time.sleep(self.SETTLE_SECONDS)
+                # TODO: Proper success checking based on robot response
                 success = True
 
         else:

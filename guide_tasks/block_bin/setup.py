@@ -1,14 +1,14 @@
 import os
 from glob import glob
 
-from setuptools import find_packages, setup
+from setuptools import find_namespace_packages, setup
 
 package_name = "block_bin"
 
 setup(
     name=package_name,
     version="1.0.0",
-    packages=find_packages(exclude=["test"]),
+    packages=find_namespace_packages(include=[package_name, f"{package_name}.*"]),
     data_files=[
         ("share/ament_index/resource_index/packages", ["resource/" + package_name]),
         ("share/" + package_name, ["package.xml"]),
@@ -26,6 +26,12 @@ setup(
     + [
         (os.path.join("share", package_name, os.path.dirname(f)), [f])
         for f in glob(os.path.join("config", "**", "*"), recursive=True)
+        if os.path.isfile(f)
+    ]
+    + [
+        # Scene USD assets (block_bin.usd etc.) — required by the task at runtime.
+        (os.path.join("share", package_name, os.path.dirname(f)), [f])
+        for f in glob(os.path.join("assets", "**", "*"), recursive=True)
         if os.path.isfile(f)
     ]
     + [

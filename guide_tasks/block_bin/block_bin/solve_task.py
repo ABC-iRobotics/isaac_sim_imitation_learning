@@ -22,6 +22,7 @@ from guide_ex.steps.manipulation.cartesian_move import MoveToCartesianPose
 from guide_ex.steps.simulation.isaac.prim import GetPrimPose, IsPrimClashing
 from guide_ex.steps.utility.exception import NodeException
 from guide_ex.steps.utility.pose import InvertPose, TransformPose
+from guide_ex.steps.utility.rotation import ProjectRotationToBaseZ, ReduceRotationToSymmetry
 from guide_ex.steps.utility.wait import WaitForSeconds
 from guide_msgs.srv import (
     CheckSuccess,
@@ -39,9 +40,7 @@ namespace_base = ""
 
 def solveTask(scene_id, robot):
     global namespace_base
-    # robot.node.get_logger().info(f'Starting call')
-    # robot.node.get_logger().info(f'Scene_id: {scene_id}')
-    # robot.callService(robot.reset, Randomize.Request())
+
     task = robot.callService(robot.randomize, Randomize.Request(id=scene_id))
     # robot.node.get_logger().info(f'Result is: {task}')
 
@@ -158,6 +157,21 @@ def solveTask(scene_id, robot):
                 dynamic_map={"l_pose": "scene_pose_inv", "r_pose": "cube_pose"},
                 output_map={"pose": "cube_pose"},
             ),
+            # Flatten the cube's orientation to a pure base-Z rotation so the grasp
+            # comes straight down instead of tilting sideways with the cube.
+            ProjectRotationToBaseZ(
+                alias="ProjectCubeToBaseZ",
+                dynamic_map={"pose": "cube_pose"},
+                output_map={"pose": "cube_pose"},
+            ),
+            # A cube has 4 identical sides, so reduce the yaw to the smallest
+            # equivalent wrist rotation.
+            ReduceRotationToSymmetry(
+                alias="MinimizeCubeRotation",
+                dynamic_map={"pose": "cube_pose"},
+                static_args={"symmetry": 4},
+                output_map={"pose": "cube_pose"},
+            ),
             TransformPose(
                 alias="TransformCubePoseForGripper",
                 dynamic_map={"l_pose": "cube_pose"},
@@ -212,9 +226,15 @@ def solveTask(scene_id, robot):
                 static_args={"speed": 0.2, "cartesian": True},
             ),
             SetGripperState(
+                # Over-close onto the cube: command fully closed (0.0) and let the cube
+                # stop the fingers. The GripperActionController latches the *stalled*
+                # position on success (set_hold_position), so the fingers must be pushing
+                # PAST the cube for that held position to keep a squeeze force. Commanding
+                # the cube's surface (~0.02) held ~zero force and the grip loosened.
+                # Tune upward (e.g. 0.01) if 0.0 squeezes too hard for the cube.
                 alias="CloseGripper",
                 dynamic_map={"robot": "robot"},
-                static_args={"gripper_goal_pos": {robot.config.gripper_joint_names[0]: 0.02}},
+                static_args={"gripper_goal_pos": {robot.config.gripper_joint_names[0]: 0.01}},
             ),
             WaitForSeconds(alias="WaitAfterClose", static_args={"seconds": 2.0}),
             TransformPose(
@@ -312,6 +332,18 @@ def solveTask(scene_id, robot):
             TransformPose(
                 alias="TransformBinPose",
                 dynamic_map={"l_pose": "scene_pose_inv", "r_pose": "bin_pose"},
+                output_map={"pose": "bin_pose"},
+            ),
+            # Same treatment for the bin: drop straight in, minimal wrist rotation.
+            ProjectRotationToBaseZ(
+                alias="ProjectBinToBaseZ",
+                dynamic_map={"pose": "bin_pose"},
+                output_map={"pose": "bin_pose"},
+            ),
+            ReduceRotationToSymmetry(
+                alias="MinimizeBinRotation",
+                dynamic_map={"pose": "bin_pose"},
+                static_args={"symmetry": 4},
                 output_map={"pose": "bin_pose"},
             ),
             TransformPose(
@@ -528,7 +560,7 @@ def main():
         frame_id=namespace_base.split("/")[-1] if namespace_base else "world",
         namespace=f"{namespace_base}/franka",
         planner_id="BiESTkConfigDefault",
-        fallback_planner_id="SPARStwokConfigDefault",
+        fallback_planner_id="PRMstarkConfigDefault",
         max_velocity=1.0,
         max_acceleration=1.0,
         gripper_action_type=ActionType.JOINT_POSITION,
