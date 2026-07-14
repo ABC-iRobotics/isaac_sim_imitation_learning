@@ -290,12 +290,16 @@ class IsaacSimRuntime:
             self._logger.debug(f"Importing {imp}...")
             import_and_bind(imp, namespace=globals())
 
-        # User defined extensions - ROS 2 and Clash Detection are mandatory
+        # User defined extensions.
+        # NOTE: the OmniGraph ROS 2 shortcut classes live in isaacsim.ros2.ui in
+        # Isaac Sim 6.0 (they were isaacsim.ros2.bridge.impl.og_shortcuts in 5.x).
+        # isaacsim.util.clash_detection was removed in 5.x but is back in 6.0, so
+        # _cmd_clash.py's optional ClashDetector import works again (full mesh clash).
         extensions_list.extend(
             [
-                {"isaacsim.util.clash_detection": ["ClashDetector"]},
-                {"isaacsim.ros2.bridge": ["scripts.og_shortcuts.og_utils.Ros2JointStatesGraph"]},
+                {"isaacsim.ros2.ui": ["og_utils.Ros2JointStatesGraph"]},
                 {"isaacsim.sensors.camera": ["Camera"]},
+                {"isaacsim.util.clash_detection": ["ClashDetector"]},
             ]
         )
         for item in extensions_list:

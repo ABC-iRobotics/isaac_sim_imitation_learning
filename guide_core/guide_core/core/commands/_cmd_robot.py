@@ -1,7 +1,11 @@
 from isaacsim.core.api.robots import Robot
 from isaacsim.core.utils.types import ArticulationAction
-from isaacsim.ros2.bridge.scripts.og_shortcuts.og_rtx_sensors import Ros2CameraGraph
-from isaacsim.ros2.bridge.scripts.og_shortcuts.og_utils import (
+# OmniGraph ROS 2 shortcut helpers. These moved across Isaac Sim versions:
+#   4.5: isaacsim.ros2.bridge.scripts.og_shortcuts
+#   5.x: isaacsim.ros2.bridge.impl.og_shortcuts
+#   6.0: isaacsim.ros2.ui
+from isaacsim.ros2.ui.og_rtx_sensors import Ros2CameraGraph
+from isaacsim.ros2.ui.og_utils import (
     Ros2ClockGraph,
     Ros2JointStatesGraph,
     Ros2TfPubGraph,
@@ -23,6 +27,27 @@ ERROR = IsaacState.ERROR
 SHUTTING_DOWN = IsaacState.SHUTTING_DOWN
 
 
+def _finalize_graph(graph_window) -> None:
+    """Build the OmniGraph, then discard the helper window so it never pops up.
+
+    The Ros2*Graph classes (isaacsim.ros2.ui) are ``MenuHelperWindow`` /
+    ``ui.Window`` subclasses meant for interactive menu use — instantiating one
+    opens a window. GUIDE only needs the graph, so build it (``make_graph`` ->
+    ``og.Controller``) and destroy the window. It is hidden first so it can't
+    flash on the next render; ``make_graph`` no-ops gracefully if the graph
+    already exists.
+    """
+    graph_window.make_graph()
+    try:
+        graph_window.visible = False
+    except Exception:
+        pass
+    try:
+        graph_window.destroy()
+    except Exception:
+        pass
+
+
 def _cmd_create_clock(self, namespace: str = "", path: str | None = None) -> None:
 
     assert self.state in [READY, PAUSED, STOPPED]
@@ -36,7 +61,7 @@ def _cmd_create_clock(self, namespace: str = "", path: str | None = None) -> Non
         clock._og_path = path
 
     print("Creating clock")
-    clock.make_graph()
+    _finalize_graph(clock)
 
 
 def _cmd_create_robot_control(
@@ -73,7 +98,7 @@ def _cmd_create_robot_control(
     if default_joint_states is not None:
         js_graph._default_joint_states = default_joint_states
 
-    js_graph.make_graph()
+    _finalize_graph(js_graph)
 
 
 def _cmd_create_camera(
@@ -109,7 +134,7 @@ def _cmd_create_camera(
     cp._depth_pub = False
 
     print("Creating camera")
-    cp.make_graph()
+    _finalize_graph(cp)
 
 
 def _cmd_create_tf_graph(
@@ -130,7 +155,7 @@ def _cmd_create_tf_graph(
     tf_g._parent_prim = parent_prim
 
     print("Creating tf graph")
-    tf_g.make_graph()
+    _finalize_graph(tf_g)
 
 
 def _cmd_set_joint(

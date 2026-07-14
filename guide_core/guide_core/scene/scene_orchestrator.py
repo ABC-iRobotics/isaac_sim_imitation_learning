@@ -282,15 +282,9 @@ class SceneOrchestrator(ABC):
         self.setup_dataset()
 
     def setup_dataset(self):
-        try:
-            from isaacsim.core.prims import SingleArticulation
-        except ImportError:
-            try:
-                from omni.isaac.core.articulations import SingleArticulation
-            except ImportError:
-                from omni.isaac.core.articulations import (
-                    ArticulationView as SingleArticulation,
-                )
+        # Deferred import: Isaac Sim extension modules only become importable
+        # after SimulationApp has started and enabled the extension.
+        from isaacsim.core.prims import SingleArticulation
 
         self.robots_views = {}
         self.ee_views = {}
@@ -343,7 +337,10 @@ class SceneOrchestrator(ABC):
                 ee_name = robot_cfg.get("end_effector_name")
                 if ee_name:
                     import omni.usd
-                    from omni.isaac.core.prims import XFormPrimView
+
+                    # Isaac Sim 5.x: the batched XFormPrimView was unified into
+                    # XFormPrim (also matches multiple prims via prim_paths_expr).
+                    from isaacsim.core.prims import XFormPrim
 
                     stage = omni.usd.get_context().get_stage()
 
@@ -366,7 +363,7 @@ class SceneOrchestrator(ABC):
 
                     if actual_ee_path:
                         try:
-                            ee_view = XFormPrimView(
+                            ee_view = XFormPrim(
                                 prim_paths_expr=actual_ee_path,
                                 name=f"{r_name}_ee_view_{self._scene_id}",
                             )

@@ -1,5 +1,5 @@
 import carb
-from isaacsim.core.utils.nucleus import is_file
+from isaacsim.storage.native import is_file
 from isaacsim.core.utils.stage import add_reference_to_stage, is_stage_loading
 from pxr import Usd
 
