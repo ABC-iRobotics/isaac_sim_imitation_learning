@@ -126,8 +126,17 @@ class SceneRecorder(Thread):
         if self.dataset is not None or self.LeRobotDataset is None:
             return
 
-        timestamp_str = datetime.datetime.now().strftime("%Y_%m_%d_%H_%M")
+        # Second-resolution timestamp: lerobot's LeRobotDatasetMetadata.create does
+        # `root.mkdir(exist_ok=False)`, so a second generation started within the same
+        # minute reused this exact path and crashed with FileExistsError ("cannot call
+        # the generation after generating one dataset"). Seconds make each run unique;
+        # guard against an unlikely same-second collision with a numeric suffix.
+        timestamp_str = datetime.datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
         dataset_path = Path.home() / "dataset" / f"{self.task_name}_{timestamp_str}"
+        _suffix = 1
+        while dataset_path.exists():
+            dataset_path = Path.home() / "dataset" / f"{self.task_name}_{timestamp_str}_{_suffix}"
+            _suffix += 1
 
         self._logger.info(f"Dataset path initialized at: {dataset_path}")
 
