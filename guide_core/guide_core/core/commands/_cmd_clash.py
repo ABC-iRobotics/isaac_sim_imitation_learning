@@ -1,16 +1,21 @@
 import isaacsim.core.utils.prims as prims_utils
-import numpy as np
-from isaacsim.util.clash_detection import ClashDetector
 from omni.physx import get_physx_interface
 
+# Isaac Sim 5.x removed the `isaacsim.util.clash_detection` extension. When it is
+# unavailable we fall back to the bounding-box (OBB/AABB) overlap check below.
+# TODO(isaac5.1): reimplement precise mesh clash via omni.physx overlap queries.
+try:
+    from isaacsim.util.clash_detection import ClashDetector
+except ImportError:
+    ClashDetector = None
+
+# Optional: only present when the Isaac Sim core extension is loaded.
 try:
     import isaacsim.core.utils.bounds as bounds_utils
 except ImportError:
-    try:
-        import omni.isaac.core.utils.bounds as bounds_utils
-    except ImportError:
-        bounds_utils = None
+    bounds_utils = None
 
+from guide_core.types.bounding import AABB, OBB, BoundingVolumeOps
 from guide_core.types.isaac_state import IsaacState
 
 UNINITIALIZED = IsaacState.UNINITIALIZED
@@ -28,6 +33,12 @@ def __init_clash_detector(self, tolerance: float = 0.0):
 
     assert self.state not in [UNINITIALIZED, INITIALIZING, ERROR, SHUTTING_DOWN]
 
+    if ClashDetector is None:
+        # No mesh-level clash detector available (Isaac Sim 5.x): keep _cd None
+        # and rely on the bounding-box fallback. Scope is tracked on self._scope.
+        self._cd = None
+        return
+
     self._cd = ClashDetector(
         self._stage, tolerance=tolerance, logging=self._debug, clash_data_layer=False
     )
@@ -37,6 +48,9 @@ def _cmd_get_scope(self) -> str:
     if getattr(self, "_cd", None) is None:
         self.__init_clash_detector()
 
+    if self._cd is None:
+        return getattr(self, "_scope", "") or ""
+
     return self._cd.get_scope()
 
 
@@ -44,7 +58,11 @@ def _cmd_set_scope(self, scope: str) -> None:
     if getattr(self, "_cd", None) is None:
         self.__init_clash_detector()
 
-    self._cd.set_scope(scope)
+    # Track scope locally so the bounding-box fallback works without ClashDetector.
+    self._scope = scope
+
+    if self._cd is not None:
+        self._cd.set_scope(scope)
 
 
 def _cmd_check_bounding_box_collision(
@@ -60,162 +78,41 @@ def _cmd_check_bounding_box_collision(
 
     bbox_cache = bounds_utils.create_bbox_cache()
 
+    # Build bounding volumes for the target prim and the scope, preferring
+    # oriented boxes (OBB) and falling back to axis-aligned boxes (AABB) when the
+    # OBB computation is unavailable. Overlap/containment are delegated to FCL
+    # (via BoundingVolumeOps) instead of a hand-rolled separating-axis test.
     try:
-        centroid_target, axes_target, half_extent_target = bounds_utils.compute_obb(
-            bbox_cache, prim_path
-        )
-        centroid_scope, axes_scope, half_extent_scope = bounds_utils.compute_obb(
-            bbox_cache, target_scope
-        )
-
-        self._logger.debug(
-            f"[CLASH_DEBUG]   Target OBB: Centroid {centroid_target}, Axes {axes_target}, Extents {half_extent_target}"
-        )
-        self._logger.debug(
-            f"[CLASH_DEBUG]   Scope OBB: Centroid {centroid_scope}, Axes {axes_scope}, Extents {half_extent_scope}"
-        )
-
-        if centroid_target is not None and centroid_scope is not None:
-            A = np.array(axes_target, dtype=float)
-            norms_A = np.linalg.norm(A, axis=1)
-            norms_A[norms_A == 0] = 1.0
-            A = A / norms_A[:, np.newaxis]
-
-            B = np.array(axes_scope, dtype=float)
-            norms_B = np.linalg.norm(B, axis=1)
-            norms_B[norms_B == 0] = 1.0
-            B = B / norms_B[:, np.newaxis]
-
-            a = np.array(half_extent_target, dtype=float)
-            b = np.array(half_extent_scope, dtype=float)
-
-            T = np.array(centroid_scope, dtype=float) - np.array(centroid_target, dtype=float)
-
-            if check_containment:
-                # For target A to be fully contained in scope B:
-                # The projection of A's radius plus distance between centers on each of B's local axes
-                # must be <= B's half-extent (plus tolerance).
-                contained = True
-                for i in range(3):
-                    L = B[i]
-                    dist = abs(np.dot(T, L))
-                    rA = (
-                        a[0] * abs(np.dot(A[0], L))
-                        + a[1] * abs(np.dot(A[1], L))
-                        + a[2] * abs(np.dot(A[2], L))
-                    )
-
-                    if dist + rA > b[i] + tol:
-                        contained = False
-                        break
-
-                self._logger.debug(
-                    f"[CLASH_DEBUG]   OBB Containment check (tolerance={tol}) result: {contained}"
-                )
-                return contained
-
-            else:
-                overlap = True
-
-                # 15 Separating Axes
-                # 3 from A
-                for i in range(3):
-                    L = A[i]
-                    rA = a[i]
-                    rB = (
-                        b[0] * abs(np.dot(B[0], L))
-                        + b[1] * abs(np.dot(B[1], L))
-                        + b[2] * abs(np.dot(B[2], L))
-                    )
-                    if abs(np.dot(T, L)) > rA + rB + tol:
-                        overlap = False
-                        break
-
-                # 3 from B
-                if overlap:
-                    for i in range(3):
-                        L = B[i]
-                        rA = (
-                            a[0] * abs(np.dot(A[0], L))
-                            + a[1] * abs(np.dot(A[1], L))
-                            + a[2] * abs(np.dot(A[2], L))
-                        )
-                        rB = b[i]
-                        if abs(np.dot(T, L)) > rA + rB + tol:
-                            overlap = False
-                            break
-
-                # 9 cross products
-                if overlap:
-                    for i in range(3):
-                        if not overlap:
-                            break
-                        for j in range(3):
-                            L = np.cross(A[i], B[j])
-                            mag = np.linalg.norm(L)
-                            if mag < 1e-5:
-                                continue
-                            L = L / mag
-                            rA = (
-                                a[0] * abs(np.dot(A[0], L))
-                                + a[1] * abs(np.dot(A[1], L))
-                                + a[2] * abs(np.dot(A[2], L))
-                            )
-                            rB = (
-                                b[0] * abs(np.dot(B[0], L))
-                                + b[1] * abs(np.dot(B[1], L))
-                                + b[2] * abs(np.dot(B[2], L))
-                            )
-                            if abs(np.dot(T, L)) > rA + rB + tol:
-                                overlap = False
-                                break
-
-                self._logger.debug(
-                    f"[CLASH_DEBUG]   OBB SAT Overlap check (tolerance={tol}) result: {overlap}"
-                )
-                return overlap
-
+        target = OBB.from_isaac(*bounds_utils.compute_obb(bbox_cache, prim_path))
+        scope = OBB.from_isaac(*bounds_utils.compute_obb(bbox_cache, target_scope))
+        kind = "OBB"
     except Exception as e:
+        self._logger.debug(f"[CLASH_DEBUG]   Error computing OBB: {e}. Falling back to AABB...")
+        try:
+            target = AABB.from_isaac(
+                bounds_utils.compute_aabb(bbox_cache, prim_path, include_children=True)
+            )
+            scope = AABB.from_isaac(
+                bounds_utils.compute_aabb(bbox_cache, target_scope, include_children=True)
+            )
+            kind = "AABB"
+        except Exception as e2:
+            self._logger.debug(f"[CLASH_DEBUG]   Error computing AABB: {e2}.")
+            return False
+
+    ops = BoundingVolumeOps(tolerance=tol)
+    if check_containment:
+        # Is the target fully contained within the scope?
+        result = ops.contains(scope, target)
         self._logger.debug(
-            f"[CLASH_DEBUG]   Error computing OBB or SAT: {e}. Falling back to AABB..."
+            f"[CLASH_DEBUG]   {kind} containment check (tolerance={tol}) result: {result}"
         )
-
-        # Fallback to AABB
-        aabb_target = bounds_utils.compute_aabb(bbox_cache, prim_path, include_children=True)
-        aabb_scope = bounds_utils.compute_aabb(bbox_cache, target_scope, include_children=True)
-
-        self._logger.debug(f"[CLASH_DEBUG]   Target AABB: {aabb_target}")
-        self._logger.debug(f"[CLASH_DEBUG]   Scope AABB: {aabb_scope}")
-
-        if aabb_target is not None and aabb_scope is not None:
-            if check_containment:
-                contained = True
-                for i in range(3):
-                    min_a, max_a = aabb_target[i], aabb_target[i + 3]
-                    min_b, max_b = aabb_scope[i], aabb_scope[i + 3]
-                    # Target A must be completely inside Scope B
-                    if min_a < min_b - tol or max_a > max_b + tol:
-                        contained = False
-                        break
-                self._logger.debug(
-                    f"[CLASH_DEBUG]   AABB Containment check (tolerance={tol}) result: {contained}"
-                )
-                return contained
-            else:
-                overlap = True
-                for i in range(3):
-                    min_a, max_a = aabb_target[i], aabb_target[i + 3]
-                    min_b, max_b = aabb_scope[i], aabb_scope[i + 3]
-                    if max_a < min_b - tol or min_a > max_b + tol:
-                        overlap = False
-                        break
-
-                self._logger.debug(
-                    f"[CLASH_DEBUG]   AABB Overlap check (tolerance={tol}) result: {overlap}"
-                )
-                return overlap
-
-    return False
+    else:
+        result = ops.intersects(target, scope)
+        self._logger.debug(
+            f"[CLASH_DEBUG]   {kind} overlap check (tolerance={tol}) result: {result}"
+        )
+    return result
 
 
 def _cmd_is_prim_clashing(
@@ -255,8 +152,13 @@ def _cmd_is_prim_clashing(
         except Exception as e:
             self._logger.debug(f"[CLASH_DEBUG]   No xformOp:translate attribute: {e}")
 
-    res = self._cd.is_prim_clashing(prim)
-    self._logger.debug(f"[CLASH_DEBUG]   is_prim_clashing returned: {res}")
+    if self._cd is not None:
+        res = self._cd.is_prim_clashing(prim)
+        self._logger.debug(f"[CLASH_DEBUG]   is_prim_clashing returned: {res}")
+    else:
+        # No mesh-level detector (Isaac Sim 5.x): defer entirely to the
+        # bounding-box overlap check below.
+        res = False
 
     # Fallback to Bounding Box (OBB/AABB) overlap check within tolerance if mesh clash returned False
     if not res:
