@@ -4,6 +4,12 @@ startup:
   anti_aliasing: 0
   verbose: False
   step_freq: 60
+  # This machine has two mismatched GPUs (RTX A4000 + A2000) with no CUDA peer
+  # access. Isaac Sim's multi-GPU renderer then deadlocks on device 1 when a camera
+  # RenderProduct is created ("Failed to begin render graph ... semaphore timed out").
+  # Force single-GPU rendering on GPU 0 (the A4000). Override per-machine if needed.
+  multi_gpu: False
+  active_gpu: 0
 
 world:
   stage_units_in_meters: 1.0

@@ -18,17 +18,41 @@ def generate_launch_description():
         "GUIDE",
     )
 
+    # Isaac Sim 6.0 is pip-installed into the '.venv' virtualenv on Python 3.12 —
+    # the SAME interpreter as ROS 2 Jazzy — so ROS 2 works natively: no bundled
+    # rclpy, no PYTHONPATH/LD_LIBRARY_PATH scrubbing, no message-package overlay.
+    # Source Jazzy + the workspace before launching; the spawned venv Python then
+    # picks up rclpy/guide_msgs from the inherited environment. Override the
+    # interpreter with ISAACSIM_PYTHON.
+    default_python = os.environ.get(
+        "ISAACSIM_PYTHON",
+        os.path.join(os.path.expanduser("~"), "ros2_ws", ".venv", "bin", "python"),
+    )
+
+    # Isaac Sim 6.0 requires the EULA to be accepted non-interactively.
+    env = {"OMNI_KIT_ACCEPT_EULA": os.environ.get("OMNI_KIT_ACCEPT_EULA", "YES")}
+
+    # Same-host DDS discovery on this machine needs a localhost cyclonedds config
+    # (loopback has no MULTICAST flag + multiple NICs). Point GUIDE at it; export
+    # the same file in the shell you run ros2/rqt from. Respect a user override.
+    if "CYCLONEDDS_URI" not in os.environ:
+        cdds_cfg = os.path.join(package_share_dir, "config", "cyclonedds_localhost.xml")
+        if os.path.isfile(cdds_cfg):
+            env["CYCLONEDDS_URI"] = f"file://{cdds_cfg}"
+
     return LaunchDescription(
         [
             DeclareLaunchArgument(
                 "python_executable",
-                default_value=os.path.join(os.path.expanduser("~"), "isaacsim/python.sh"),
-                description="Path to the Isaac Sim Python interpreter (python.sh file)",
+                default_value=default_python,
+                description="Path to the Isaac Sim Python interpreter (the '.venv' Python 3.12 "
+                "for pip-installed Isaac Sim 6.0; override via ISAACSIM_PYTHON).",
             ),
             ExecuteProcess(
                 cmd=[LaunchConfiguration("python_executable"), node_path, "--debug", "False"],
                 name="GUIDE",
                 output="both",
+                additional_env=env,
             ),
         ]
     )

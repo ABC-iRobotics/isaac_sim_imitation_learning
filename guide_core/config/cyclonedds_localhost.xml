@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!-- Same-host ROS 2 discovery without multicast.
+     This machine's loopback has no MULTICAST flag and has several NICs
+     (ethernet, tailscale VPN, a NO-CARRIER USB NIC), so cyclonedds' default
+     multicast discovery fails and node discovery hangs. Force the loopback
+     interface and unicast SPDP to localhost so processes on this host
+     (GUIDE on Isaac's bundled cyclonedds + system ROS 2 tools) find each other. -->
+<CycloneDDS xmlns="https://cdds.io/config"
+            xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+            xsi:schemaLocation="https://cdds.io/config https://raw.githubusercontent.com/eclipse-cyclonedds/cyclonedds/master/etc/cyclonedds.xsd">
+  <Domain id="any">
+    <General>
+      <Interfaces>
+        <NetworkInterface name="lo" presence_required="false" multicast="true"/>
+      </Interfaces>
+      <AllowMulticast>false</AllowMulticast>
+      <EnableMulticastLoopback>true</EnableMulticastLoopback>
+    </General>
+    <Discovery>
+      <ParticipantIndex>auto</ParticipantIndex>
+      <MaxAutoParticipantIndex>60</MaxAutoParticipantIndex>
+      <Peers>
+        <Peer address="localhost"/>
+      </Peers>
+    </Discovery>
+  </Domain>
+</CycloneDDS>
