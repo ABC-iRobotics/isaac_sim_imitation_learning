@@ -1,6 +1,7 @@
 [submodule "modules/pymoveit2"]
 	path = modules/pymoveit2
-	url = https://github.com/AndrejOrsula/pymoveit2.git
+	url = https://github.com/ABC-iRobotics/irob_pymoveit2.git
+	branch = main
 [submodule "modules/lerobot"]
 	path = modules/lerobot
 	url = https://github.com/huggingface/lerobot.git
