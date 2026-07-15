@@ -1,4 +1,4 @@
-import random
+from guide_core.types.randomization import Categorical
 
 from guide_core.scene.scene_orchestrator import SceneOrchestrator
 
@@ -13,14 +13,15 @@ class Scene(SceneOrchestrator):
     def reset_postprocess(self, result):
         return super().reset_postprocess(result)
 
-    def randomize_preprocess(self, instructions):
-        self.c = random.choice(self.colors)
-        self.s = random.choice(self.sides)
+    def randomize_preprocess(self, randomizer):
+        # Seeded, captured discrete draws through the single Randomizer.
+        self.c = randomizer.draw("color", Categorical(tuple(self.colors)))
+        self.s = randomizer.draw("side", Categorical(tuple(self.sides)))
 
         self.task: str = f"Put the {self.c} block in the {self.s} bin."
         print(f"Task: {self.task}")
 
-        return instructions
+        return randomizer
 
     def randomize_postprocess(self, result):
         return f"{{ \"goal\": \"/bin_{0 if self.s == 'left' else 1}\", \"target\": \"/blocks/{self.c}_block\", \"task\": \"{self.task}\" }}"

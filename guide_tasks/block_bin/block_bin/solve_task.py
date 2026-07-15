@@ -48,56 +48,17 @@ def solveTask(scene_id, robot):
     target = task_dict["target"]
     goal = task_dict["goal"]
 
+    # Allow the (now scene-level, seeded) randomization to settle before solving.
     time.sleep(5)
-    robot.node.get_logger().info(f"Paths: /Scene_{scene_id}{target} and /Scene_{scene_id}{goal}")
-    scene_pose = PoseType.from_ros_pose(
-        robot.callService(robot.pose, Pose.Request(path=f"/Scene_{scene_id}")).pose
-    )
-    cube_pose = PoseType.from_ros_pose(
-        robot.callService(robot.pose, Pose.Request(path=f"/Scene_{scene_id}{target}")).pose
-    )
-    bin_pose = PoseType.from_ros_pose(
-        robot.callService(robot.pose, Pose.Request(path=f"/Scene_{scene_id}{goal}")).pose
-    )
 
-    bin_pose.position.random_low = [-0.05, -0.1, 0.0]
-    bin_pose.position.random_high = [0.05, 0.1, 0.0]
-    bin_pose.orientation.random_axis = [0.0, 0.0, 1.0]
-    bin_pose.orientation.random_max_angle = np.pi / 4
-
+    # rest_pose is the only pose fed into the GUIDE-EX graph as context; every
+    # other pose (scene/cube/bin/approach/retreat) is computed inside the node
+    # tree (GetPrimPose / InvertPose / TransformPose), so no imperative pose
+    # math lives here.
     rest_pose = PoseType(
         position=PointType([0.0, 0.0, 0.5]),
         orientation=RotationType(R.from_euler("xyz", [np.pi, 0.0, 0.0])),
     )
-    uncluch_pose = PoseType(position=PointType([0.0, 0.0, -0.1])) * rest_pose
-
-    cube_pose = (
-        scene_pose.inv() * cube_pose * PoseType(orientation=RotationType(R.from_euler("x", np.pi)))
-    )
-    cube_approach_pose = PoseType(position=PointType([0.0, 0.0, 0.1])) * cube_pose
-    cube_retreat_pose = PoseType(position=PointType([0.0, 0.0, 0.4])) * cube_pose
-
-    bin_pose = (
-        scene_pose.inv() * bin_pose * PoseType(orientation=RotationType(R.from_euler("x", np.pi)))
-    )
-    bin_approach_pose = PoseType(position=PointType([0.0, 0.0, 0.1])) * bin_pose
-
-    # ================================================================================================== #
-    # Scene solving nodes: MotionPrimitives
-
-    # MoveToCartesianPose().run(robot=robot, target_pose=rest_pose, speed=1.0)
-    # SetGripperState().run(robot=robot, gripper_goal_pos={robot.config.gripper_joint_names[0]: 0.04})
-    # WaitForSeconds().run(seconds=2.0)
-    # MoveToCartesianPose().run(robot=robot, target_pose=cube_approach_pose, speed=0.5, cartesian=True)
-    # MoveToCartesianPose().run(robot=robot, target_pose=cube_pose, speed=0.2, cartesian=True)
-    # SetGripperState().run(robot=robot, gripper_goal_pos={robot.config.gripper_joint_names[0]: 0.02})
-    # WaitForSeconds().run(seconds=2.0)
-    # MoveToCartesianPose().run(robot=robot, target_pose=cube_retreat_pose, speed=0.5, cartesian=True)
-    # MoveToCartesianPose().run(robot=robot, target_pose=bin_approach_pose, speed=0.5)
-    # SetGripperState().run(robot=robot, gripper_goal_pos={robot.config.gripper_joint_names[0]: 0.04})
-    # WaitForSeconds().run(seconds=2.0)
-    # MoveToCartesianPose().run(robot=robot, target_pose=rest_pose, speed=1.0)
-    # WaitForSeconds().run(seconds=5.0)
 
     # ================================================================================================== #
     # Scene solving nodes: MotionSequence

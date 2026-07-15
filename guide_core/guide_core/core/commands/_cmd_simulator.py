@@ -22,11 +22,20 @@ def _execute_instructions_directly(self, instructions: list) -> list:
     return results
 
 
-def _cmd_randomize_scene(self, scene_id: int) -> bool:
+def _cmd_randomize_scene(self, scene_id: int, seed=None, params=None):
     simulator = getattr(self, "_simulator", None)
     if simulator is None:
         raise RuntimeError("Simulator reference not set on IsaacSimRuntime!")
-    instructions = simulator._scene_manager.randomize_preprocess(scene_id)
+    # Optional value-level injection: a JSON RandomizationRecord reproduces the
+    # exact scene by bypassing sampling. seed selects a specific generator.
+    inject = None
+    if params:
+        from guide_core.types.randomization import RandomizationRecord
+
+        inject = RandomizationRecord.from_json(params)
+    instructions = simulator._scene_manager.randomize_preprocess(
+        scene_id, seed=seed, inject=inject
+    )
     results = self._execute_instructions_directly(instructions)
     return simulator._scene_manager.randomize_postprocess(scene_id, results)
 

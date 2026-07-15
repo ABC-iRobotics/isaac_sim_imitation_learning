@@ -245,15 +245,18 @@ class SceneManager:
 
         return result
 
-    def randomize_preprocess(self, scene_id: int):
-        instructions = self._scenes[scene_id].randomize_instructions
+    def randomize_preprocess(self, scene_id: int, seed=None, inject=None):
+        # Drawing now happens inside the scene's randomize() lifecycle (seeded +
+        # captured). It mutates randomize_instructions in place with concrete,
+        # drawn poses and records every value; we just return the instructions.
+        self._scenes[scene_id].randomize(seed=seed, inject=inject)
+        return self._scenes[scene_id].randomize_instructions
 
-        try:
-            instructions = self._scenes[scene_id].randomize_preprocess(instructions)
-        except NotImplementedError:
-            pass
-
-        return instructions
+    def get_last_record_json(self, scene_id: int) -> str:
+        ctx = getattr(self._scenes[scene_id], "_last_context", None)
+        if ctx is None or ctx.record is None:
+            return ""
+        return ctx.to_json()
 
     def randomize_postprocess(self, scene_id: int, result):
         try:

@@ -9,10 +9,15 @@ from scipy.spatial.transform import Rotation as R
 
 from guide_core.types import conversion
 
-# * Geometry classes wrapping common representations used in Isaac Sim and ROS
+# Geometry value types shared across Isaac Sim and ROS.
+#
+# These are PURE values: randomization no longer lives here. Distributions and
+# the single Randomizer (guide_core.types.randomization) own all sampling, which
+# removes the old lazy-resample defect (to_numpy()/to_ros() are deterministic and
+# a value never silently changes between reads). See SCENE_REPRODUCE_PLAN.md.
 
 
-def _vec3(arr: np.ndarray) -> np.ndarray:
+def _vec3(arr) -> np.ndarray:
     a = np.asarray(arr, dtype=float).reshape(3)
     if not np.all(np.isfinite(a)):
         raise ValueError("Vector has non-finite values.")
@@ -22,269 +27,127 @@ def _vec3(arr: np.ndarray) -> np.ndarray:
 # -----------------------------
 # Point / Vector3
 # -----------------------------
-
-
-@dataclass(slots=True)
+@dataclass(frozen=True, slots=True)
 class Point:
     coordinates: np.ndarray = field(default_factory=lambda: np.zeros(3, dtype=float))
-    random_low: np.ndarray | None = None
-    random_high: np.ndarray | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "coordinates", _vec3(self.coordinates))
-
-        if self.random_low is not None:
-            object.__setattr__(self, "random_low", _vec3(self.random_low))
-
-        if self.random_high is not None:
-            object.__setattr__(self, "random_high", _vec3(self.random_high))
-
-        if (self.random_low is None) != (self.random_high is None):
-            raise ValueError("random_low and random_high must be both set or both None")
-
-        if self.random_low is not None:
-            if np.any(self.random_low > self.random_high):
-                raise ValueError("random_low must be <= random_high")
-
-    @property
-    def is_randomized(self) -> bool:
-        return self.random_low is not None
-
-    def _sample_delta(self) -> np.ndarray:
-        if not self.is_randomized:
-            return np.zeros(3, dtype=float)
-
-        return np.random.uniform(self.random_low, self.random_high)
 
     @staticmethod
     def zero() -> Point:
         return Point()
 
     @staticmethod
-    def from_numpy(
-        arr: np.ndarray, random_low: np.ndarray | None = None, random_high: np.ndarray | None = None
-    ) -> Point:
-        return Point(coordinates=_vec3(arr), random_low=random_low, random_high=random_high)
+    def from_numpy(arr) -> Point:
+        return Point(coordinates=_vec3(arr))
 
     @staticmethod
     def from_ros(p: conversion.RosPoint) -> Point:
         return Point.from_numpy(conversion.ros_to_vec3(p))
 
     def to_numpy(self) -> np.ndarray:
-        return self.coordinates + self._sample_delta()
+        return self.coordinates.copy()
 
     def to_ros(self) -> conversion.RosPoint:
-        return conversion.vec3_to_ros_point(self.coordinates + self._sample_delta())
+        return conversion.vec3_to_ros_point(self.coordinates)
 
     def __add__(self, other: Vector3 | np.ndarray) -> Point:
         if isinstance(other, Vector3):
-            return Point.from_numpy(
-                self.coordinates + other.v,
-                self.random_low + other.random_low,
-                self.random_high + other.random_high,
-            )
-        return Point.from_numpy(
-            self.coordinates + _vec3(other),
-            self.random_low + other.random_low,
-            self.random_high + other.random_high,
-        )
+            return Point.from_numpy(self.coordinates + other.v)
+        return Point.from_numpy(self.coordinates + _vec3(other))
 
     def __sub__(self, other: Point | Vector3 | np.ndarray) -> Vector3:
         if isinstance(other, Point):
-            return Vector3.from_numpy(
-                self.coordinates - other.coordinates,
-                self.random_low - other.random_high,
-                self.random_high - other.random_low,
-            )
+            return Vector3.from_numpy(self.coordinates - other.coordinates)
         if isinstance(other, Vector3):
-            return Vector3.from_numpy(
-                self.coordinates - other.v,
-                self.random_low - other.random_high,
-                self.random_high - other.random_low,
-            )
+            return Vector3.from_numpy(self.coordinates - other.v)
         return Vector3.from_numpy(self.coordinates - _vec3(other))
 
     def __neg__(self) -> Point:
-        return Point.from_numpy(
-            -self.coordinates,
-            -self.random_high if self.random_high is not None else None,
-            -self.random_low if self.random_low is not None else None,
-        )
+        return Point.from_numpy(-self.coordinates)
 
 
-@dataclass(slots=True)
+@dataclass(frozen=True, slots=True)
 class Vector3:
     v: np.ndarray = field(default_factory=lambda: np.zeros(3, dtype=float))
-    random_low: np.ndarray | None = None
-    random_high: np.ndarray | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "v", _vec3(self.v))
-
-        if self.random_low is not None:
-            object.__setattr__(self, "random_low", _vec3(self.random_low))
-
-        if self.random_high is not None:
-            object.__setattr__(self, "random_high", _vec3(self.random_high))
-
-        if (self.random_low is None) != (self.random_high is None):
-            raise ValueError("random_low and random_high must be both set or both None")
-
-        if self.random_low is not None:
-            if np.any(self.random_low > self.random_high):
-                raise ValueError("random_low must be <= random_high")
-
-    @property
-    def is_randomized(self) -> bool:
-        return self.random_low is not None
-
-    def _sample_delta(self) -> np.ndarray:
-        if not self.is_randomized:
-            return np.zeros(3, dtype=float)
-
-        return np.random.uniform(self.random_low, self.random_high)
 
     @staticmethod
     def zero() -> Vector3:
         return Vector3()
 
     @staticmethod
-    def from_numpy(
-        arr: np.ndarray, random_low: np.ndarray | None = None, random_high: np.ndarray | None = None
-    ) -> Vector3:
-        return Vector3(v=_vec3(arr), random_low=random_low, random_high=random_high)
+    def from_numpy(arr) -> Vector3:
+        return Vector3(v=_vec3(arr))
 
     @staticmethod
     def from_ros(v: conversion.RosVector3) -> Vector3:
         return Vector3.from_numpy(conversion.ros_to_vec3(v))
 
     def to_numpy(self) -> np.ndarray:
-        return self.v + self._sample_delta()
+        return self.v.copy()
 
     def to_ros(self) -> conversion.RosVector3:
-        return conversion.vec3_to_ros_vec(self.v + self._sample_delta())
+        return conversion.vec3_to_ros_vec(self.v)
 
     def __add__(self, other: Vector3 | np.ndarray) -> Vector3:
         if isinstance(other, Vector3):
-            return Vector3.from_numpy(
-                self.v + other.v,
-                self.random_low + other.random_low,
-                self.random_high + other.random_high,
-            )
-        return Vector3.from_numpy(self.v + _vec3(other), self.random_low, self.random_high)
+            return Vector3.from_numpy(self.v + other.v)
+        return Vector3.from_numpy(self.v + _vec3(other))
 
     def __sub__(self, other: Vector3 | np.ndarray) -> Vector3:
         if isinstance(other, Vector3):
-            return Vector3.from_numpy(
-                self.v - other.v,
-                self.random_low - other.random_high,
-                self.random_high - other.random_low,
-            )
-        return Vector3.from_numpy(self.v - _vec3(other), self.random_low, self.random_high)
+            return Vector3.from_numpy(self.v - other.v)
+        return Vector3.from_numpy(self.v - _vec3(other))
 
     def __neg__(self) -> Vector3:
-        return Vector3.from_numpy(
-            -self.v,
-            -self.random_high if self.random_high is not None else None,
-            -self.random_low if self.random_low is not None else None,
-        )
+        return Vector3.from_numpy(-self.v)
 
 
 # -----------------------------
 # Rotation
 # -----------------------------
-@dataclass(slots=True)
+@dataclass(frozen=True, slots=True)
 class Rotation:
     rot: R = field(default_factory=R.identity)
     scale_factor: float = 1.0
-    random_axis: np.ndarray | None = None
-    random_max_angle: float | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "scale_factor", float(self.scale_factor))
-
-        if self.random_axis is not None:
-            axis = _vec3(self.random_axis)
-            norm = np.linalg.norm(axis)
-            if norm == 0.0:
-                raise ValueError("random_axis must be non-zero")
-            object.__setattr__(self, "random_axis", axis / norm)
-
-        if (self.random_axis is None) != (self.random_max_angle is None):
-            raise ValueError("random_axis and random_max_angle must be both set or both None")
-
-        if self.random_max_angle is not None:
-            object.__setattr__(self, "random_max_angle", float(self.random_max_angle))
-            if self.random_max_angle < 0.0:
-                raise ValueError("random_max_angle must be >= 0")
-
-    @property
-    def is_randomized(self) -> bool:
-        return self.random_axis is not None
-
-    def _sample_angle(self) -> float:
-        if not self.is_randomized:
-            return 0.0
-        return float(np.random.uniform(-self.random_max_angle, self.random_max_angle))
-
-    def _sample_rot(self) -> R:
-        if not self.is_randomized:
-            return self.rot
-
-        angle = self._sample_angle()
-        delta_rot = R.from_rotvec(self.random_axis * angle)
-        return self.rot * delta_rot
 
     @staticmethod
     def identity() -> Rotation:
         return Rotation()
 
     @staticmethod
-    def from_scipy(
-        rot: R,
-        scale_factor: float = 1.0,
-        random_axis: np.ndarray | None = None,
-        random_max_angle: float | None = None,
-    ) -> Rotation:
-        return Rotation(
-            rot=rot,
-            scale_factor=float(scale_factor),
-            random_axis=random_axis,
-            random_max_angle=random_max_angle,
-        )
+    def from_scipy(rot: R, scale_factor: float = 1.0) -> Rotation:
+        return Rotation(rot=rot, scale_factor=float(scale_factor))
 
     @staticmethod
     def from_ros_quat(q: conversion.RosQuaternion) -> Rotation:
         return Rotation.from_scipy(conversion.ros_quat_to_scipy_rot(q))
 
     def to_scipy(self) -> R:
-        return self._sample_rot()
+        return self.rot
 
     def to_numpy(self) -> np.ndarray:
-        return self._sample_rot().as_matrix()
+        return self.rot.as_matrix()
 
     def to_numpy_quat(self) -> np.ndarray:
-        rot = self._sample_rot().as_quat()
-        return np.array([rot[3], rot[0], rot[1], rot[2]])  # xyzw -> wxyz
+        q = self.rot.as_quat()
+        return np.array([q[3], q[0], q[1], q[2]])  # xyzw -> wxyz
 
     def to_ros_quat(self) -> RosQuaternion:
-        return conversion.scipy_rot_to_ros_quat(self._sample_rot())
+        return conversion.scipy_rot_to_ros_quat(self.rot)
 
     def inv(self) -> Rotation:
-        return Rotation(
-            rot=self.rot.inv(),
-            scale_factor=self.scale_factor,
-            random_axis=self.random_axis,
-            random_max_angle=self.random_max_angle,
-        )
+        return Rotation(rot=self.rot.inv(), scale_factor=self.scale_factor)
 
     def __mul__(self, other: Rotation) -> Rotation:
-        return Rotation(
-            rot=self.rot * other.rot,
-            scale_factor=self.scale_factor * other.scale_factor,
-            random_axis=self.random_axis,
-            random_max_angle=self.random_max_angle,
-        )
+        return Rotation(rot=self.rot * other.rot, scale_factor=self.scale_factor * other.scale_factor)
 
     def __invert__(self) -> Rotation:
         return self.inv()
@@ -296,13 +159,13 @@ class Rotation:
             v = x.v
         else:
             v = _vec3(x)
-        return self._sample_rot().apply(v)
+        return self.rot.apply(v)
 
 
 # -----------------------------
 # Pose
 # -----------------------------
-@dataclass(slots=True)
+@dataclass(frozen=True, slots=True)
 class Pose:
     position: Point = field(default_factory=Point.zero)
     orientation: Rotation = field(default_factory=Rotation.identity)
@@ -391,7 +254,7 @@ class Pose:
 # -----------------------------
 # Transform
 # -----------------------------
-@dataclass(slots=True)
+@dataclass(frozen=True, slots=True)
 class Transform:
     translation: Vector3 = field(default_factory=Vector3.zero)
     rotation: Rotation = field(default_factory=Rotation.identity)
