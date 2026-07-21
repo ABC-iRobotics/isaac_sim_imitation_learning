@@ -83,7 +83,7 @@ def _cmd_create_robot_control(
             self._world.scene.add(robot)
             self._robots[articulation_root] = robot
         except Exception as e:
-            print(f"[DEBUG_FREEZE] Failed to add robot {articulation_root} to scene: {e}")
+            self._logger.error(f"Failed to add robot {articulation_root} to scene: {e}")
 
     js_graph = Ros2JointStatesGraph()
     js_graph._publisher = True
