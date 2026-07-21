@@ -17,7 +17,9 @@ from guide_core.types.randomization import (
     Randomizer,
     SeedTree,
     draw_instructions,
+    grid_from_yaml,
     pose_from_yaml,
+    single_grid,
 )
 from guide_core.types.scene_context import SceneContext
 from guide_core.types.scene_state import SceneState
@@ -91,6 +93,9 @@ class SceneOrchestrator(ABC):
         # Getting randomize.yaml
         self.randomize_instructions = self.parse_instruction(Path(f"{path}/{randomize_path}"))
 
+        # At most one grid-enabled instruction per scene (raises on a second).
+        self._grid = single_grid(self.randomize_instructions)
+
         # Getting success.yaml
         self.success_instructions = self.parse_instruction(Path(f"{path}/{success_path}"))
 
@@ -109,9 +114,35 @@ class SceneOrchestrator(ABC):
         dataset_name = f"dataset_{self._sim_id}_{self._scene_id}"
         from guide_core.core.recorder_manager import RecorderServer
 
+        # The scene module loads via spec_from_file_location as "scene", so
+        # self.__class__.__module__ ("scene") is not the real package. The scene
+        # directory name is the actual package (e.g. "block_bin").
+        self._package_name = Path(str(self._path)).name or package_name
+
         try:
             client = RecorderServer.get_client()
-            self.recorder = client.get_recorder(package_name, dataset_name, self._config)
+            self.recorder = client.get_recorder(self._package_name, dataset_name, self._config)
+            # Seed the metadata sidecar with run-level constants (master seed, ids,
+            # and the zone-grid layout so a dataset is self-describing).
+            try:
+                run_meta = {
+                    "master_seed": self._seed_tree.master,
+                    "scene_id": self._scene_id,
+                    "sim_id": self._sim_id,
+                }
+                if self._grid is not None:
+                    g = self._grid
+                    run_meta["grid"] = {
+                        "region_low": [float(x) for x in g.low],
+                        "region_high": [float(x) for x in g.high],
+                        "resolution": g.resolution,
+                        "ncols": g.ncols,
+                        "nrows": g.nrows,
+                        "num_zones": g.num_zones,
+                    }
+                self.recorder.set_run_meta(run_meta)
+            except Exception as e:
+                self._logger.debug(f"Could not set run meta on recorder: {e}")
         except ConnectionRefusedError:
             self._logger.error(
                 "RecorderServer not running! Ensure it was started in the Main Process."
@@ -162,6 +193,19 @@ class SceneOrchestrator(ABC):
         return robot_list
 
     def create_camera_graphs(self):
+        # ROS 2 camera publisher graphs are optional (config: publish_camera_topics).
+        # During dataset generation the recorder captures images GUIDE-side via
+        # render-product annotators, so publishing the /cam_* topics is unnecessary
+        # and the large reliable image streams flood the localhost DDS transport,
+        # starving small service replies (e.g. PoseRequest). Enable at inference time
+        # when a policy needs live images over ROS.
+        if not self._config.get("publish_camera_topics", True):
+            self._logger.info(
+                "[SceneOrchestrator] publish_camera_topics=false: skipping ROS 2 camera "
+                "publisher graphs (recorder still captures images via annotators)."
+            )
+            return []
+
         camera_list: List[Dict] = []
         for name, data in self._config.get("cameras", {}).items():
             path = data["path"]
@@ -206,6 +250,11 @@ class SceneOrchestrator(ABC):
                     # randomize(). We attach the spec to the instruction and put
                     # a concrete *base* Pose in kwargs for immediate execution.
                     instruction["pose_dist"] = pose_from_yaml(instruction["kwargs"]["pose"])
+                    # Optional zone grid over the position range (grid_from_yaml
+                    # returns None unless the position carries grid.enabled).
+                    instruction["grid"] = grid_from_yaml(
+                        (instruction["kwargs"]["pose"] or {}).get("position")
+                    )
 
                     pose_spec = instruction["kwargs"]["pose"]
                     position_base = np.array(
@@ -256,15 +305,24 @@ class SceneOrchestrator(ABC):
     def check_warmup(self):
         raise NotImplementedError("Check warmup function is not implemented for this scene.")
 
-    def randomize(self, *, seed=None, inject=None) -> SceneContext:
+    def zone_target(self) -> Optional[str]:
+        """Prim path to place in the requested zone (e.g. the selected target).
+
+        Scenes with a zoned target (see docs/design/zoned-randomization.md) override
+        this to return the scene-prefixed prim path chosen this episode (typically
+        after ``randomize_preprocess`` picks it). Default: no zoned target.
+        """
+        return None
+
+    def randomize(self, *, seed=None, inject=None, zone=None) -> SceneContext:
         """Draw this episode's randomization deterministically and capture it.
 
-        Builds the per-episode generator from the scene's SeedTree, draws every
-        randomize instruction's PoseDist into a concrete Pose (kwargs['pose']),
-        lets the subclass draw its own discrete choices via
-        randomize_preprocess(randomizer), and returns the SceneContext (identity
-        + realized RandomizationRecord). If ``inject`` is given, drawn values
-        come from it instead of the generator.
+        Order: the scene's discrete/selection draws (``randomize_preprocess``) run
+        FIRST so the scene can declare the zone target (e.g. the color-picked block)
+        before the pose draws that place it; then every randomize instruction's
+        PoseDist is drawn into a concrete Pose (kwargs['pose']). ``zone`` (>=0)
+        restricts the ``zone_target`` prim to that grid cell; everything else is
+        free. If ``inject`` is given, drawn values come from it instead of the RNG.
         """
         if seed is not None:
             rng, used = self._seed_tree.generator(int(seed))
@@ -274,15 +332,26 @@ class SceneOrchestrator(ABC):
         record = RandomizationRecord(seed=used)
         randomizer = Randomizer(rng, record, inject=inject)
 
-        draw_instructions(self.randomize_instructions, randomizer, self._pose_from_vec7)
-
+        # Discrete/selection draws first -> the scene can declare its zone target.
         try:
             self.randomize_preprocess(randomizer)
         except NotImplementedError:
             pass
 
+        draw_instructions(
+            self.randomize_instructions,
+            randomizer,
+            self._pose_from_vec7,
+            self._resolve_prims,
+            zone=zone,
+            zone_target=self.zone_target(),
+        )
+
         self._last_context = SceneContext(
-            scene_id=self._scene_id, episode_index=self._episode_index, record=record
+            scene_id=self._scene_id,
+            episode_index=self._episode_index,
+            record=record,
+            zone=zone,
         )
         self._episode_index += 1
         return self._last_context
@@ -292,6 +361,45 @@ class SceneOrchestrator(ABC):
         v = np.asarray(vec, dtype=float).reshape(7)
         # vec is [x, y, z, w, x, y, z]; SciPy wants quat [x, y, z, w]
         return Pose(Point(v[:3]), Rotation(R.from_quat([v[4], v[5], v[6], v[3]])))
+
+    def _resolve_prims(self, expr: str) -> list:
+        """Concrete prim paths matching an Isaac prim-path pattern.
+
+        Resolves with the SAME mechanism ``_cmd_set_local_poses`` uses —
+        ``XFormPrim`` — so the set matches exactly what the command targets:
+        only *xformable* prims (the object Xforms), NOT their meshes/materials.
+        (``find_matching_prim_paths`` regex-matches every prim under the pattern,
+        which both over-selects non-xformable prims and diverges from the command.)
+        Sorted for a deterministic, reproducible draw order.
+        """
+        try:
+            from isaacsim.core.prims import XFormPrim
+
+            view = XFormPrim(prim_paths_expr=expr, reset_xform_properties=False)
+            return sorted(str(p) for p in view.prim_paths)
+        except Exception as e:
+            self._logger.warning(f"Could not resolve prims for pattern '{expr}': {e}")
+            return []
+
+    def get_start_state(self) -> dict:
+        """Per-robot starting joint configuration: ``{robot_name: {dof_name: value}}``.
+
+        Read live from each robot's articulation view. The robot is not reset to a
+        fixed home between episodes, so this captures the configuration the episode
+        actually starts from.
+        """
+        state: dict = {}
+        views = getattr(self, "robots_views", None) or {}
+        for r_name, view in views.items():
+            try:
+                names = list(view.dof_names)
+                pos = view.get_joint_positions()
+                if hasattr(pos, "ndim") and pos.ndim > 1:
+                    pos = pos[0]
+                state[r_name] = {n: float(v) for n, v in zip(names, pos)}
+            except Exception as e:
+                self._logger.debug(f"Could not read start state for robot '{r_name}': {e}")
+        return state
 
     def create_render_products(self, rep):
         dataset_cfg = self._config.get("dataset", {})

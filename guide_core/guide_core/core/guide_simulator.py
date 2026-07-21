@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 from threading import Thread
@@ -10,11 +9,6 @@ from typing import Any, Optional, Tuple
 from guide_core.core.runtime import IsaacSimRuntime
 from guide_core.scene.scene_manager import SceneManager
 from guide_core.types.geometry import Point, Pose
-
-
-def _trace(msg: str) -> None:
-    """Fine-grained startup tracing (mirrors guide_core.ros.guide_ros._trace)."""
-    print(f"[GUIDE-TRACE] {msg}", file=sys.stderr, flush=True)
 
 
 class GUIDESimulator:
@@ -42,19 +36,14 @@ class GUIDESimulator:
         # 1. Start Recorder Server in a separate process before simulation starts
         from guide_core.core.recorder_manager import RecorderServer
 
-        _trace("    init_runtime: RecorderServer.start_server() [spawns subprocess]...")
         RecorderServer.start_server()
-        _trace("    init_runtime: RecorderServer started. Constructing IsaacSimRuntime...")
 
         # 2. Start Isaac Sim in this process natively
         self._runtime = IsaacSimRuntime(config=config, debug=debug, logger=self._logger)
         self._runtime._simulator = self
-        _trace("    init_runtime: IsaacSimRuntime constructed.")
 
     def run_runtime_loop(self):
-        _trace("    run_runtime_loop: calling self._runtime.run_loop() [MAIN Isaac step loop]...")
         self._runtime.run_loop()
-        _trace("    run_runtime_loop: run_loop() returned.")
 
     def call(self, name: str, timeout: Optional[float] = None, *args: Any, **kwargs: Any) -> Any:
         return self._runtime.call(name, timeout, *args, **kwargs)
@@ -78,17 +67,16 @@ class GUIDESimulator:
     def init_scene_manager(self):
         from guide_core.scene.scene_manager import SceneManager
 
-        _trace("    init_scene_manager: constructing SceneManager...")
         self._scene_manager = SceneManager(sim_id=self._sim_id, logger=self._logger)
 
         if self._runtime._world:
-            _trace("    init_scene_manager: adding scene_manager_step physics callback...")
             self._runtime._world.add_physics_callback(
                 "scene_manager_step", self._scene_manager.step(self._runtime)
             )
-        else:
-            _trace("    init_scene_manager: WARNING _runtime._world is None (no physics callback)")
-        _trace("    init_scene_manager: DONE.")
+        elif self._logger is not None:
+            self._logger.warning(
+                "Runtime world is None; scene_manager_step physics callback not added."
+            )
 
     def register_scene(self, package_name: str) -> Tuple[int, Tuple[float, float, float]]:
         return self.call("register_scene", package_name=package_name)
@@ -163,8 +151,8 @@ class GUIDESimulator:
     def reset_scene(self, scene_id: int) -> bool:
         return self.call("reset_scene", scene_id=scene_id)
 
-    def randomize_scene(self, scene_id: int) -> bool:
-        return self.call("randomize_scene", scene_id=scene_id)
+    def randomize_scene(self, scene_id: int, use_zone: bool = False, zone: int = 0) -> bool:
+        return self.call("randomize_scene", scene_id=scene_id, use_zone=use_zone, zone=zone)
 
     def is_success(self, scene_id: int) -> bool:
         return self.call("is_success", scene_id=scene_id)

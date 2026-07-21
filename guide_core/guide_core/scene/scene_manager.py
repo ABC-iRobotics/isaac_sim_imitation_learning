@@ -245,11 +245,12 @@ class SceneManager:
 
         return result
 
-    def randomize_preprocess(self, scene_id: int, seed=None, inject=None):
+    def randomize_preprocess(self, scene_id: int, seed=None, inject=None, zone=None):
         # Drawing now happens inside the scene's randomize() lifecycle (seeded +
         # captured). It mutates randomize_instructions in place with concrete,
         # drawn poses and records every value; we just return the instructions.
-        self._scenes[scene_id].randomize(seed=seed, inject=inject)
+        # `zone` (>=0) places the scene's zone target in that grid cell.
+        self._scenes[scene_id].randomize(seed=seed, inject=inject, zone=zone)
         return self._scenes[scene_id].randomize_instructions
 
     def get_last_record_json(self, scene_id: int) -> str:
@@ -264,7 +265,87 @@ class SceneManager:
         except NotImplementedError:
             pass
 
+        # Capture this episode's reproduction metadata for the dataset sidecar:
+        # seed + drawn values from the record, task/target/goal from the result.
+        self._capture_episode_meta(scene_id, result)
+
         return result
+
+    def _capture_episode_meta(self, scene_id: int, result):
+        """Assemble per-episode sidecar metadata and hand it to the scene's recorder.
+
+        Stays in the core layer: reads the seeded ``_last_context`` and the scene's
+        ``task``, and pulls ``target``/``goal`` from the randomize_postprocess result
+        when it is a JSON object exposing them (generic — skipped otherwise).
+        """
+        scene = self._scenes[scene_id]
+        recorder = getattr(scene, "recorder", None)
+        if recorder is None:
+            return
+        try:
+            meta: Dict[str, Any] = {"scene_id": int(scene_id), "task": getattr(scene, "task", "")}
+            ctx = getattr(scene, "_last_context", None)
+            if ctx is not None:
+                meta["draw_index"] = int(ctx.episode_index)
+                if ctx.record is not None:
+                    meta["seed"] = int(ctx.record.seed)
+                    meta["values"] = ctx.record.to_dict().get("values", {})
+                # Zone metadata: the requested zone (or None) + its cell bounds.
+                grid = getattr(scene, "_grid", None)
+                if grid is not None:
+                    meta["zone"] = None if ctx.zone is None else int(ctx.zone)
+                    if ctx.zone is not None and ctx.zone >= 0:
+                        cl, ch = grid.cell_bounds(int(ctx.zone))
+                        meta["zone_cell"] = {
+                            "low": [float(x) for x in cl],
+                            "high": [float(x) for x in ch],
+                        }
+            if isinstance(result, str):
+                try:
+                    parsed = json.loads(result)
+                    if isinstance(parsed, dict):
+                        for k in ("target", "goal"):
+                            if k in parsed:
+                                meta[k] = parsed[k]
+                except (ValueError, TypeError):
+                    pass
+            # Per-robot starting joint configuration (varies per episode since the
+            # robot is not reset to a fixed home).
+            try:
+                start_state = scene.get_start_state()
+                if start_state:
+                    meta["start_state"] = start_state
+            except Exception:
+                pass
+            # Main randomized object's pose: the manipulated target, pulled from the
+            # recorded draw values (keyed by prim path) via the target path.
+            target = meta.get("target")
+            if target is not None:
+                meta["main_object"] = {
+                    "prim": target,
+                    "pose": self._main_object_pose(meta.get("values") or {}, target),
+                }
+            recorder.set_pending_episode_meta(meta)
+        except Exception as e:
+            self._logger.debug(f"Could not capture episode meta: {e}")
+
+    @staticmethod
+    def _main_object_pose(values: dict, target: str):
+        """Pose of the main randomized object (the target) from the recorded draw
+        values. Value keys are scene-prefixed prim paths, possibly wildcards
+        (e.g. ``/Scene_0/blocks/*``); match on the target's parent-path suffix."""
+        if not isinstance(values, dict) or not target:
+            return None
+        tparent = str(target).rsplit("/", 1)[0]  # "/blocks" ("" for a top-level prim)
+        for k, v in values.items():
+            if not isinstance(v, (list, tuple)):
+                continue
+            base = str(k).split("*", 1)[0].rstrip("/")  # e.g. "/Scene_0/blocks"
+            # Exact prim (key "/Scene_0/bin_0" vs target "/bin_0") or wildcard
+            # child (key "/Scene_0/blocks/*" vs target "/blocks/red_block").
+            if base.endswith(str(target)) or (tparent and base.endswith(tparent)):
+                return list(v)
+        return None
 
     def is_success_preprocess(self, scene_id: int):
         instructions = self._scenes[scene_id].success_instructions
@@ -336,9 +417,11 @@ class SceneManager:
 
         return step_task
 
-    def start_recording(self, scene_id: int):
+    def start_recording(self, scene_id: int, path: str = ""):
         with self._locks[scene_id]:
             self._scenes[scene_id].state = SceneState.PREPARATION
+            # Forward the requested dataset base dir to the recorder (empty => ~/dataset).
+            self._scenes[scene_id].recorder.set_output_path(path)
             self._scenes[scene_id].recorder.clear_start_recording()
             if hasattr(self._scenes[scene_id], "clear_recording_history"):
                 self._scenes[scene_id].clear_recording_history()

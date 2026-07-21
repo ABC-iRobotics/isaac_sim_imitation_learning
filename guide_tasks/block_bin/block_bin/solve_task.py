@@ -15,6 +15,7 @@ from scipy.spatial.transform.rotation import Rotation as R
 from guide_core.types.geometry import Point as PointType
 from guide_core.types.geometry import Pose as PoseType
 from guide_core.types.geometry import Rotation as RotationType
+from guide_core.types.randomization import zone_plan
 from guide_ex.core.composite_node import CompositeNode, RecoveryNode
 from guide_ex.core.states import Layer
 from guide_ex.steps.end_effector.gripper_control import SetGripperState
@@ -38,10 +39,15 @@ from guide_msgs.srv import (
 namespace_base = ""
 
 
-def solveTask(scene_id, robot):
+def solveTask(scene_id, robot, zone=None):
     global namespace_base
 
-    task = robot.callService(robot.randomize, Randomize.Request(id=scene_id))
+    task = robot.callService(
+        robot.randomize,
+        Randomize.Request(
+            id=scene_id, use_zone=zone is not None, zone=int(zone) if zone is not None else 0
+        ),
+    )
     # robot.node.get_logger().info(f'Result is: {task}')
 
     task_dict = json.loads(task.message)
@@ -161,6 +167,7 @@ def solveTask(scene_id, robot):
             "target": "target",
             "scene_path": "scene_path",
             "cube_pose": "cube_pose",
+            "rest_pose": "rest_pose",
         },
         children=[
             # ~~~~~~~~~~~~~~~~~~ Pick ~~~~~~~~~~~~~~~~~ #
@@ -201,7 +208,7 @@ def solveTask(scene_id, robot):
             TransformPose(
                 alias="TransformCubeRetreatPose",
                 dynamic_map={"r_pose": "cube_pose"},
-                static_args={"l_pose": PoseType(position=PointType([0.0, 0.0, 0.4]))},
+                static_args={"l_pose": PoseType(position=PointType([0.0, 0.0, 0.2]))},
                 output_map={"pose": "cube_retreat_pose"},
             ),
             MoveToCartesianPose(
@@ -228,6 +235,25 @@ def solveTask(scene_id, robot):
         condition_expr="grasp_success",
         true_branch=None,
         false_branch=NodeException(name="NoGrasp"),
+        fallbacks={
+            # If the straight-up retreat can't execute (its Cartesian move aborts),
+            # lift via the (high) rest pose instead, then resume the pick at the
+            # grasp check -- so the arm reaches the bin THROUGH the rest pose rather
+            # than sweeping across at grasp height and clipping the bin.
+            "MoveToCubeRetreat": RecoveryNode(
+                name="RetreatViaRest",
+                level=Layer.SEQUENCE,
+                children=[
+                    MoveToCartesianPose(
+                        alias="MoveToRestRetreat",
+                        dynamic_map={"robot": "robot", "target_pose": "rest_pose"},
+                        static_args={"speed": 1.0},
+                    ),
+                ],
+                dynamic_map={"robot": "robot", "rest_pose": "rest_pose"},
+                resume_target="CheckClash",
+            ),
+        },
     )
 
     robot.node.get_logger().info("Initializing Unclutch subtask...")
@@ -318,7 +344,7 @@ def solveTask(scene_id, robot):
             TransformPose(
                 alias="TransformBinApproachPose",
                 dynamic_map={"r_pose": "bin_pose"},
-                static_args={"l_pose": PoseType(position=PointType([0.0, 0.0, 0.1]))},
+                static_args={"l_pose": PoseType(position=PointType([0.0, 0.0, 0.15]))},
                 output_map={"pose": "bin_approach_pose"},
             ),
             # Move to bin and release the cube
@@ -443,27 +469,69 @@ is_generating = False
 generation_lock = threading.Lock()
 
 
-def generate_demos_thread(amount, scene_id, robot):
+# block_bin has a zone grid; read it from this package's randomize.yaml so
+# "all zones" expands to the right count.
+def scene_num_zones() -> int:
+    try:
+        import os
+
+        import yaml
+        from ament_index_python.packages import get_package_share_directory
+
+        from guide_core.types.randomization import grid_from_yaml
+
+        share = get_package_share_directory("block_bin")
+        with open(os.path.join(share, "config", "randomize.yaml")) as f:
+            spec = yaml.safe_load(f)
+        for instr in spec.get("instructions", []):
+            pos = (instr.get("kwargs", {}).get("pose") or {}).get("position")
+            g = grid_from_yaml(pos)
+            if g is not None:
+                return g.num_zones
+    except Exception:
+        pass
+    return 1
+
+
+def zoned_request(zone_counts: dict, path: str = "") -> Demonstration.Request:
+    """Build a Demonstration request: ``zoned_request({2: 4, 16: 10})`` -> 4 demos
+    with the cube in zone 2 and 10 in zone 16."""
+    zones = [int(z) for z in zone_counts]
+    counts = [int(zone_counts[z]) for z in zones]
+    return Demonstration.Request(path=path, zones=zones, counts=counts)
+
+
+def all_zones_request(count: int, path: str = "") -> Demonstration.Request:
+    """`count` demos in EVERY zone (empty ``zones`` signal)."""
+    return Demonstration.Request(path=path, zones=[], counts=[int(count)])
+
+
+def generate_demos_thread(plan, scene_id, robot, path=""):
     global is_generating
     try:
-        successful_episodes = 0
+        total = len(plan)
+        idx = 0
         attempts = 0
-        while successful_episodes < amount:
+        while idx < total:
+            zone = plan[idx]
             attempts += 1
             robot.node.get_logger().info(
-                f"--- Attempt {attempts} | Successful {successful_episodes}/{amount} ---"
+                f"--- Episode {idx + 1}/{total} (zone={zone}) | attempt {attempts} ---"
             )
 
-            robot.callService(robot.start_recording, StartRecording.Request(id=scene_id))
+            robot.callService(
+                robot.start_recording, StartRecording.Request(id=scene_id, path=path)
+            )
 
-            success = solveTask(scene_id, robot)
+            success = solveTask(scene_id, robot, zone=zone)
 
             if success:
                 robot.node.get_logger().info("Task succeeded. Saving episode...")
                 robot.callService(
                     robot.stop_recording, StopRecording.Request(id=scene_id, save_episode=True)
                 )
-                successful_episodes += 1
+                idx += 1
+                attempts = 0
             else:
                 robot.node.get_logger().info("Task failed. Discarding episode...")
                 robot.callService(
@@ -491,14 +559,17 @@ def handle_generate_demonstration(request, response, scene_id, robot):
 
         is_generating = True
 
-    amount = request.amount
-    robot.node.get_logger().info(f"Received request to generate {amount} demonstrations.")
+    plan = zone_plan(request.zones, request.counts, scene_num_zones())
+    robot.node.get_logger().info(
+        f"Received request: zones={list(request.zones)} counts={list(request.counts)} "
+        f"-> {len(plan)} demonstrations."
+    )
 
-    t = threading.Thread(target=generate_demos_thread, args=(amount, scene_id, robot))
+    t = threading.Thread(target=generate_demos_thread, args=(plan, scene_id, robot, request.path))
     t.start()
 
     response.success = True
-    response.message = f"Started generating {amount} demonstrations."
+    response.message = f"Started generating {len(plan)} demonstrations."
     return response
 
 

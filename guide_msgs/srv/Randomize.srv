@@ -1,4 +1,6 @@
 uint8 id
+bool use_zone
+int32 zone
 ---
 string message
 bool success

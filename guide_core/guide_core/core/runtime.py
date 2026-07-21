@@ -412,27 +412,19 @@ class IsaacSimRuntime:
         This is a blocking method, but needs to be run in the main thread. \\
         Ends when objects internal state is SHUTTING_DOWN.
         """
+        while self.state not in [SHUTTING_DOWN, UNINITIALIZED]:
+            start = time.time()
 
-        while True:
-            print(f"[DEBUG_FREEZE] run_loop: outer loop iteration, state={self.state}")
-            while self.state not in [SHUTTING_DOWN, UNINITIALIZED]:
-                start = time.time()
+            self._process_commands(max_per_cycle=50)
 
-                self._process_commands(max_per_cycle=50)
+            if self.state == RUNNING:
+                try:
+                    self._world.step()
+                except BaseException as e:
+                    self._logger.error(f"Error in simulation step: {e}", exc_info=True)
 
-                if self.state == RUNNING:
-                    try:
-                        self._world.step()
-                    except BaseException as e:
-                        print(f"[FATAL ERROR IN STEP] {type(e).__name__}: {e}")
-                        import traceback
-
-                        traceback.print_exc()
-
-                sleep_s = max(0.0, start + self._dt - time.time())
-                time.sleep(sleep_s)
-
-            print(f"[DEBUG_FREEZE] run_loop: inner loop EXITED, state={self.state}")
+            sleep_s = max(0.0, start + self._dt - time.time())
+            time.sleep(sleep_s)
 
     def _process_commands(self, max_per_cycle: int) -> None:
         for _ in range(max_per_cycle):
@@ -454,22 +446,12 @@ class IsaacSimRuntime:
                     result = True
                 cmd.reply_q.put(result)
                 self._logger.debug("Command processed successfully")
-                # [DEBUG_FREEZE] Check if state changed during command execution
-                if self.state in [SHUTTING_DOWN, UNINITIALIZED]:
-                    print(
-                        f"[DEBUG_FREEZE] _process_commands: state changed to {self.state} AFTER executing '{cmd.name}'"
-                    )
             except BaseException as e:
                 cmd.reply_q.put(e)
                 self._logger.error(
                     f"Error processing command '{cmd.name}': {type(e).__name__} - {e}",
                     exc_info=True,
                 )
-                # [DEBUG_FREEZE] Check if state changed during exception
-                if self.state in [SHUTTING_DOWN, UNINITIALIZED]:
-                    print(
-                        f"[DEBUG_FREEZE] _process_commands: state changed to {self.state} AFTER exception in '{cmd.name}': {e}"
-                    )
 
     def is_running(self) -> bool:
         return self.state == RUNNING
