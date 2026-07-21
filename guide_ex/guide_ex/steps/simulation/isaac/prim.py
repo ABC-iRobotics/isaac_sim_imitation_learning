@@ -34,12 +34,19 @@ class GetPrimPose(BaseNode):
                 error_message="ROS2 node is not available for GetPrimPose.",
             )
 
-        if getattr(robot.node, "pose", None) is None:
-            robot.node.pose = robot.node.create_client(
+        # Reuse the single PoseRequest client that lives on `robot.pose` (created up
+        # front by the solver's main()). The check must target the SAME attribute the
+        # call below uses: the old code checked `robot.node.pose` (always None) and so
+        # created a SECOND client on the same /PoseRequest service every run. Two
+        # clients on one service on one node breaks rmw_cyclonedds reply routing — the
+        # server sends the response but the calling client's future never completes
+        # (confirmed: server logs "backend RETURNED", client executor idle, future
+        # never done). Create it only if truly absent, on the node's registered group.
+        if getattr(robot, "pose", None) is None:
+            robot.pose = robot.node.create_client(
                 PoseSrv,
                 f"{sim_namespace}/PoseRequest",
-                qos_profile=rclpy.qos.QoSProfile(depth=10),
-                callback_group=rclpy.callback_groups.ReentrantCallbackGroup(),
+                callback_group=robot._reentrant_callback_group,
             )
 
         request = PoseSrv.Request()
@@ -89,12 +96,14 @@ class IsPrimClashing(BaseNode):
                 error_message="ROS2 node is not available for IsPrimClashing.",
             )
 
-        if getattr(robot.node, "collision", None) is None:
-            robot.node.collision = robot.node.create_client(
+        # Same fix as GetPrimPose: reuse the single `robot.collision` client (created
+        # by main()); the old check on `robot.node.collision` always created a second
+        # client on the same /CollisionRequest service and would hang reply routing.
+        if getattr(robot, "collision", None) is None:
+            robot.collision = robot.node.create_client(
                 Collision,
                 f"{sim_namespace}/CollisionRequest",
-                qos_profile=rclpy.qos.QoSProfile(depth=10),
-                callback_group=rclpy.callback_groups.ReentrantCallbackGroup(),
+                callback_group=robot._reentrant_callback_group,
             )
 
         request = Collision.Request()
