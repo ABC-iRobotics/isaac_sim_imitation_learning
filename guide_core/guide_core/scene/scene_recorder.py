@@ -39,6 +39,14 @@ class SceneRecorder(Thread):
         # Base directory for datasets, set per StartRecording request; empty => ~/dataset.
         self._output_path = ""
 
+        # GUIDE metadata sidecar written into <dataset>/meta/:
+        #  - _run_meta: run-level constants (master_seed, ids) pushed once via set_run_meta()
+        #  - _pending_episode_meta: per-episode payload (seed, values, task, target/goal,
+        #    per-robot start_state, main_object pose) pushed by the orchestrator per episode
+        self._run_meta: dict = {}
+        self._pending_episode_meta: dict | None = None
+        self._info_written = False
+
         self.dataset = None
         self.LeRobotDataset = None
 
@@ -172,10 +180,15 @@ class SceneRecorder(Thread):
         # the generation after generating one dataset"). Seconds make each run unique;
         # guard against an unlikely same-second collision with a numeric suffix.
         timestamp_str = datetime.datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
-        dataset_path = Path.home() / "dataset" / f"{self.task_name}_{timestamp_str}"
+        # Dataset base dir comes from the StartRecording request's `path` (its parent
+        # directory); an empty string falls back to ~/dataset. `~` is expanded.
+        base_dir = (
+            Path(self._output_path).expanduser() if self._output_path else Path.home() / "dataset"
+        )
+        dataset_path = base_dir / f"{self.task_name}_{timestamp_str}"
         _suffix = 1
         while dataset_path.exists():
-            dataset_path = Path.home() / "dataset" / f"{self.task_name}_{timestamp_str}_{_suffix}"
+            dataset_path = base_dir / f"{self.task_name}_{timestamp_str}_{_suffix}"
             _suffix += 1
 
         self._logger.info(f"Dataset path initialized at: {dataset_path}")
@@ -237,6 +250,9 @@ class SceneRecorder(Thread):
         )
         self._logger.info("Successfully created LeRobotDataset.")
 
+        # Run-level sidecar (master seed, config, provenance), written once.
+        self._write_run_info(dataset_path)
+
     def _process_frame(self, item: dict, episode_start_time: float) -> float:
         if "timestamp" not in item:
             return episode_start_time
@@ -271,9 +287,18 @@ class SceneRecorder(Thread):
 
     def _finalize_episode(self):
         if self.dataset is not None:
+            # LeRobot counts only saved episodes, so the index the about-to-be-saved
+            # episode takes is the current total (read before save_episode increments it).
+            meta_obj = getattr(self.dataset, "meta", None)
+            if meta_obj is not None and hasattr(meta_obj, "total_episodes"):
+                episode_index = int(meta_obj.total_episodes)
+            else:
+                episode_index = int(getattr(self.dataset, "num_episodes", 0))
             self._logger.info("Saving episode...")
             self.dataset.save_episode(parallel_encoding=False)
             self._logger.info("Episode successfully saved.")
+            self._write_episode_meta(episode_index)
+        self._pending_episode_meta = None
         self.start_recording_event.clear()
         self.stop_recording_event.set()
         self.idle_event.set()
@@ -283,9 +308,122 @@ class SceneRecorder(Thread):
             self._logger.info("Discarding episode...")
             self.dataset.clear_episode_buffer()
             self._logger.info("Episode buffer cleared.")
+        # Drop the pending sidecar payload so only saved episodes are recorded.
+        self._pending_episode_meta = None
         self.start_recording_event.clear()
         self.stop_recording_event.set()
         self.idle_event.set()
+
+    # ---- GUIDE metadata sidecar -----------------------------------------------
+
+    def _write_run_info(self, dataset_path):
+        """Write <dataset>/meta/guide_info.json (run constants) once per dataset."""
+        if self._info_written:
+            return
+        try:
+            meta_dir = Path(dataset_path) / "meta"
+            meta_dir.mkdir(parents=True, exist_ok=True)
+            info = {
+                "guide_meta_schema": GUIDE_META_SCHEMA,
+                "created": datetime.datetime.now().isoformat(timespec="seconds"),
+                "scene": {
+                    "dataset_name": self.task_name,
+                    "scene_id": self._run_meta.get("scene_id"),
+                    "sim_id": self._run_meta.get("sim_id"),
+                },
+                "task": {
+                    "package": self.package_name,
+                    "version": self._package_version(self.package_name),
+                },
+                "randomization": {
+                    "master_seed": self._run_meta.get("master_seed"),
+                    "grid": self._run_meta.get("grid"),
+                },
+                "config": self._curate_config(self.config),
+                "provenance": self._collect_provenance(),
+            }
+            (meta_dir / "guide_info.json").write_text(json.dumps(info, indent=2, sort_keys=True))
+            self._info_written = True
+            self._logger.info(f"Wrote GUIDE run info to {meta_dir / 'guide_info.json'}")
+        except Exception as e:
+            self._logger.error(f"Failed to write guide_info.json: {e}")
+
+    def _write_episode_meta(self, episode_index: int):
+        """Append one JSON line to <dataset>/meta/guide_episodes.jsonl for a saved episode."""
+        try:
+            line = {"episode_index": int(episode_index), "schema_version": GUIDE_META_SCHEMA}
+            if self._pending_episode_meta:
+                line.update(self._pending_episode_meta)
+            # Authoritative LeRobot index (never the orchestrator draw counter).
+            line["episode_index"] = int(episode_index)
+            meta_dir = Path(self.dataset.root) / "meta"
+            meta_dir.mkdir(parents=True, exist_ok=True)
+            with open(meta_dir / "guide_episodes.jsonl", "a") as f:
+                f.write(json.dumps(line, sort_keys=True) + "\n")
+        except Exception as e:
+            self._logger.error(f"Failed to write guide episode meta: {e}")
+
+    @staticmethod
+    def _curate_config(cfg: dict) -> dict:
+        """Curated scene config for the sidecar: full robot + camera blocks (so future
+        domain randomization of joints / camera params & alignment is reproducible) plus
+        the USD asset and dataset config. ``origin``/``limits`` are omitted — they live
+        in the task's own configuration."""
+        if not isinstance(cfg, dict):
+            return {}
+        keys = ("usd_path", "robots", "cameras", "dataset", "startup", "world")
+        return {k: cfg[k] for k in keys if k in cfg}
+
+    @staticmethod
+    def _package_version(pkg: str):
+        # 1. pip / dist metadata (e.g. isaacsim).
+        try:
+            from importlib.metadata import PackageNotFoundError, version
+
+            try:
+                return version(pkg)
+            except PackageNotFoundError:
+                pass
+        except Exception:
+            pass
+        # 2. ROS package.xml <version> (ament packages carry no pip dist metadata).
+        try:
+            import xml.etree.ElementTree as ET
+
+            from ament_index_python.packages import get_package_share_directory
+
+            share = get_package_share_directory(pkg)
+            v = ET.parse(Path(share) / "package.xml").getroot().findtext("version")
+            return v.strip() if v else None
+        except Exception:
+            return None
+
+    def _collect_provenance(self) -> dict:
+        import os
+        import subprocess
+        import sys
+
+        prov = {
+            "ros_distro": os.environ.get("ROS_DISTRO"),
+            "python": sys.version.split()[0],
+            "isaac_sim": self._package_version("isaacsim"),
+            "guide_commit": None,
+        }
+        # Short commit — best-effort; an installed (copy) build has no .git.
+        try:
+            import guide_core
+
+            src = Path(guide_core.__file__).resolve().parent
+            out = subprocess.run(
+                ["git", "-C", str(src), "rev-parse", "--short", "HEAD"],
+                capture_output=True,
+                text=True,
+                timeout=3,
+            )
+            prov["guide_commit"] = out.stdout.strip() or None
+        except Exception:
+            pass
+        return prov
 
     def _finalize_dataset(self):
         if self.dataset is not None:

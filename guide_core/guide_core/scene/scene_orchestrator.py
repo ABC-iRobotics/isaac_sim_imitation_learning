@@ -114,9 +114,35 @@ class SceneOrchestrator(ABC):
         dataset_name = f"dataset_{self._sim_id}_{self._scene_id}"
         from guide_core.core.recorder_manager import RecorderServer
 
+        # The scene module loads via spec_from_file_location as "scene", so
+        # self.__class__.__module__ ("scene") is not the real package. The scene
+        # directory name is the actual package (e.g. "block_bin").
+        self._package_name = Path(str(self._path)).name or package_name
+
         try:
             client = RecorderServer.get_client()
-            self.recorder = client.get_recorder(package_name, dataset_name, self._config)
+            self.recorder = client.get_recorder(self._package_name, dataset_name, self._config)
+            # Seed the metadata sidecar with run-level constants (master seed, ids,
+            # and the zone-grid layout so a dataset is self-describing).
+            try:
+                run_meta = {
+                    "master_seed": self._seed_tree.master,
+                    "scene_id": self._scene_id,
+                    "sim_id": self._sim_id,
+                }
+                if self._grid is not None:
+                    g = self._grid
+                    run_meta["grid"] = {
+                        "region_low": [float(x) for x in g.low],
+                        "region_high": [float(x) for x in g.high],
+                        "resolution": g.resolution,
+                        "ncols": g.ncols,
+                        "nrows": g.nrows,
+                        "num_zones": g.num_zones,
+                    }
+                self.recorder.set_run_meta(run_meta)
+            except Exception as e:
+                self._logger.debug(f"Could not set run meta on recorder: {e}")
         except ConnectionRefusedError:
             self._logger.error(
                 "RecorderServer not running! Ensure it was started in the Main Process."
@@ -354,6 +380,26 @@ class SceneOrchestrator(ABC):
         except Exception as e:
             self._logger.warning(f"Could not resolve prims for pattern '{expr}': {e}")
             return []
+
+    def get_start_state(self) -> dict:
+        """Per-robot starting joint configuration: ``{robot_name: {dof_name: value}}``.
+
+        Read live from each robot's articulation view. The robot is not reset to a
+        fixed home between episodes, so this captures the configuration the episode
+        actually starts from.
+        """
+        state: dict = {}
+        views = getattr(self, "robots_views", None) or {}
+        for r_name, view in views.items():
+            try:
+                names = list(view.dof_names)
+                pos = view.get_joint_positions()
+                if hasattr(pos, "ndim") and pos.ndim > 1:
+                    pos = pos[0]
+                state[r_name] = {n: float(v) for n, v in zip(names, pos)}
+            except Exception as e:
+                self._logger.debug(f"Could not read start state for robot '{r_name}': {e}")
+        return state
 
     def create_render_products(self, rep):
         dataset_cfg = self._config.get("dataset", {})
