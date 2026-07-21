@@ -22,7 +22,7 @@ def _execute_instructions_directly(self, instructions: list) -> list:
     return results
 
 
-def _cmd_randomize_scene(self, scene_id: int, seed=None, params=None):
+def _cmd_randomize_scene(self, scene_id: int, seed=None, params=None, use_zone=False, zone=0):
     simulator = getattr(self, "_simulator", None)
     if simulator is None:
         raise RuntimeError("Simulator reference not set on IsaacSimRuntime!")
@@ -33,8 +33,11 @@ def _cmd_randomize_scene(self, scene_id: int, seed=None, params=None):
         from guide_core.types.randomization import RandomizationRecord
 
         inject = RandomizationRecord.from_json(params)
+    # `use_zone` gates zoning so a caller that leaves the field default never
+    # silently targets zone 0 (see Randomize.srv).
+    zone_arg = int(zone) if use_zone else None
     instructions = simulator._scene_manager.randomize_preprocess(
-        scene_id, seed=seed, inject=inject
+        scene_id, seed=seed, inject=inject, zone=zone_arg
     )
     results = self._execute_instructions_directly(instructions)
     return simulator._scene_manager.randomize_postprocess(scene_id, results)

@@ -17,7 +17,9 @@ from guide_core.types.randomization import (
     Randomizer,
     SeedTree,
     draw_instructions,
+    grid_from_yaml,
     pose_from_yaml,
+    single_grid,
 )
 from guide_core.types.scene_context import SceneContext
 from guide_core.types.scene_state import SceneState
@@ -90,6 +92,9 @@ class SceneOrchestrator(ABC):
 
         # Getting randomize.yaml
         self.randomize_instructions = self.parse_instruction(Path(f"{path}/{randomize_path}"))
+
+        # At most one grid-enabled instruction per scene (raises on a second).
+        self._grid = single_grid(self.randomize_instructions)
 
         # Getting success.yaml
         self.success_instructions = self.parse_instruction(Path(f"{path}/{success_path}"))
@@ -219,6 +224,11 @@ class SceneOrchestrator(ABC):
                     # randomize(). We attach the spec to the instruction and put
                     # a concrete *base* Pose in kwargs for immediate execution.
                     instruction["pose_dist"] = pose_from_yaml(instruction["kwargs"]["pose"])
+                    # Optional zone grid over the position range (grid_from_yaml
+                    # returns None unless the position carries grid.enabled).
+                    instruction["grid"] = grid_from_yaml(
+                        (instruction["kwargs"]["pose"] or {}).get("position")
+                    )
 
                     pose_spec = instruction["kwargs"]["pose"]
                     position_base = np.array(
@@ -269,15 +279,24 @@ class SceneOrchestrator(ABC):
     def check_warmup(self):
         raise NotImplementedError("Check warmup function is not implemented for this scene.")
 
-    def randomize(self, *, seed=None, inject=None) -> SceneContext:
+    def zone_target(self) -> Optional[str]:
+        """Prim path to place in the requested zone (e.g. the selected target).
+
+        Scenes with a zoned target (see docs/design/zoned-randomization.md) override
+        this to return the scene-prefixed prim path chosen this episode (typically
+        after ``randomize_preprocess`` picks it). Default: no zoned target.
+        """
+        return None
+
+    def randomize(self, *, seed=None, inject=None, zone=None) -> SceneContext:
         """Draw this episode's randomization deterministically and capture it.
 
-        Builds the per-episode generator from the scene's SeedTree, draws every
-        randomize instruction's PoseDist into a concrete Pose (kwargs['pose']),
-        lets the subclass draw its own discrete choices via
-        randomize_preprocess(randomizer), and returns the SceneContext (identity
-        + realized RandomizationRecord). If ``inject`` is given, drawn values
-        come from it instead of the generator.
+        Order: the scene's discrete/selection draws (``randomize_preprocess``) run
+        FIRST so the scene can declare the zone target (e.g. the color-picked block)
+        before the pose draws that place it; then every randomize instruction's
+        PoseDist is drawn into a concrete Pose (kwargs['pose']). ``zone`` (>=0)
+        restricts the ``zone_target`` prim to that grid cell; everything else is
+        free. If ``inject`` is given, drawn values come from it instead of the RNG.
         """
         if seed is not None:
             rng, used = self._seed_tree.generator(int(seed))
@@ -287,15 +306,26 @@ class SceneOrchestrator(ABC):
         record = RandomizationRecord(seed=used)
         randomizer = Randomizer(rng, record, inject=inject)
 
-        draw_instructions(self.randomize_instructions, randomizer, self._pose_from_vec7)
-
+        # Discrete/selection draws first -> the scene can declare its zone target.
         try:
             self.randomize_preprocess(randomizer)
         except NotImplementedError:
             pass
 
+        draw_instructions(
+            self.randomize_instructions,
+            randomizer,
+            self._pose_from_vec7,
+            self._resolve_prims,
+            zone=zone,
+            zone_target=self.zone_target(),
+        )
+
         self._last_context = SceneContext(
-            scene_id=self._scene_id, episode_index=self._episode_index, record=record
+            scene_id=self._scene_id,
+            episode_index=self._episode_index,
+            record=record,
+            zone=zone,
         )
         self._episode_index += 1
         return self._last_context
@@ -305,6 +335,25 @@ class SceneOrchestrator(ABC):
         v = np.asarray(vec, dtype=float).reshape(7)
         # vec is [x, y, z, w, x, y, z]; SciPy wants quat [x, y, z, w]
         return Pose(Point(v[:3]), Rotation(R.from_quat([v[4], v[5], v[6], v[3]])))
+
+    def _resolve_prims(self, expr: str) -> list:
+        """Concrete prim paths matching an Isaac prim-path pattern.
+
+        Resolves with the SAME mechanism ``_cmd_set_local_poses`` uses —
+        ``XFormPrim`` — so the set matches exactly what the command targets:
+        only *xformable* prims (the object Xforms), NOT their meshes/materials.
+        (``find_matching_prim_paths`` regex-matches every prim under the pattern,
+        which both over-selects non-xformable prims and diverges from the command.)
+        Sorted for a deterministic, reproducible draw order.
+        """
+        try:
+            from isaacsim.core.prims import XFormPrim
+
+            view = XFormPrim(prim_paths_expr=expr, reset_xform_properties=False)
+            return sorted(str(p) for p in view.prim_paths)
+        except Exception as e:
+            self._logger.warning(f"Could not resolve prims for pattern '{expr}': {e}")
+            return []
 
     def create_render_products(self, rep):
         dataset_cfg = self._config.get("dataset", {})

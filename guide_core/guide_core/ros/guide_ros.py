@@ -156,7 +156,9 @@ class GUIDEROS2Interface(Node):
         try:
             id = request.id
 
-            output = self._backend.randomize_scene(scene_id=id)
+            output = self._backend.randomize_scene(
+                scene_id=id, use_zone=request.use_zone, zone=request.zone
+            )
 
             response.message = output if isinstance(output, str) else ""
             response.success = output is not None

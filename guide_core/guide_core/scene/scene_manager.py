@@ -245,11 +245,12 @@ class SceneManager:
 
         return result
 
-    def randomize_preprocess(self, scene_id: int, seed=None, inject=None):
+    def randomize_preprocess(self, scene_id: int, seed=None, inject=None, zone=None):
         # Drawing now happens inside the scene's randomize() lifecycle (seeded +
         # captured). It mutates randomize_instructions in place with concrete,
         # drawn poses and records every value; we just return the instructions.
-        self._scenes[scene_id].randomize(seed=seed, inject=inject)
+        # `zone` (>=0) places the scene's zone target in that grid cell.
+        self._scenes[scene_id].randomize(seed=seed, inject=inject, zone=zone)
         return self._scenes[scene_id].randomize_instructions
 
     def get_last_record_json(self, scene_id: int) -> str:
