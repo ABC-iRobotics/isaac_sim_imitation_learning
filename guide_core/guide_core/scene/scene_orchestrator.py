@@ -162,6 +162,19 @@ class SceneOrchestrator(ABC):
         return robot_list
 
     def create_camera_graphs(self):
+        # ROS 2 camera publisher graphs are optional (config: publish_camera_topics).
+        # During dataset generation the recorder captures images GUIDE-side via
+        # render-product annotators, so publishing the /cam_* topics is unnecessary
+        # and the large reliable image streams flood the localhost DDS transport,
+        # starving small service replies (e.g. PoseRequest). Enable at inference time
+        # when a policy needs live images over ROS.
+        if not self._config.get("publish_camera_topics", True):
+            self._logger.info(
+                "[SceneOrchestrator] publish_camera_topics=false: skipping ROS 2 camera "
+                "publisher graphs (recorder still captures images via annotators)."
+            )
+            return []
+
         camera_list: List[Dict] = []
         for name, data in self._config.get("cameras", {}).items():
             path = data["path"]

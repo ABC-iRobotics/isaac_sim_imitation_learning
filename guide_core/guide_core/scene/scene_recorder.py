@@ -29,6 +29,10 @@ class SceneRecorder(Thread):
         self.task_name = task_name
         self.config = config
 
+        # Frames dropped because the record queue was full (recorder fell behind);
+        # see put_record_data. Non-zero means the encoder can't keep up, not a stall.
+        self._dropped_frames = 0
+
         self.dataset = None
         self.LeRobotDataset = None
 
@@ -48,7 +52,25 @@ class SceneRecorder(Thread):
         return self.stop_recording_event.wait(timeout)
 
     def put_record_data(self, data):
-        self.record_queue.put(data)
+        # This runs on the sim's physics-callback thread (via the recorder proxy),
+        # so a full queue must NEVER block -- otherwise a recorder that falls behind
+        # stalls the whole simulation and services stop responding.
+        # Control signals (FINALIZE_EPISODE / DISCARD_EPISODE / FINALIZE / SHUTDOWN)
+        # must always be delivered, so block for those (they are rare). Frame dicts
+        # are droppable: drop the frame instead of blocking and keep stepping.
+        if isinstance(data, str):
+            self.record_queue.put(data)
+            return
+        try:
+            self.record_queue.put_nowait(data)
+        except queue.Full:
+            self._dropped_frames += 1
+            logger = getattr(self, "_logger", None)
+            if logger and (self._dropped_frames == 1 or self._dropped_frames % 100 == 0):
+                logger.warning(
+                    f"Recorder queue full: dropped {self._dropped_frames} frame(s); the "
+                    f"recorder is behind but the simulation is not stalled."
+                )
 
     def set_idle(self):
         self.idle_event.set()
@@ -189,7 +211,10 @@ class SceneRecorder(Thread):
             features=features,
             root=str(dataset_path),
             use_videos=True,
-            image_writer_threads=0,
+            # Async image writing so the recorder drains the queue fast enough to
+            # keep up with the sim (synchronous writing was the bottleneck that
+            # filled the queue and stalled the main loop). 0 -> synchronous.
+            image_writer_threads=4,
             image_writer_processes=0,
         )
         self._logger.info("Successfully created LeRobotDataset.")
