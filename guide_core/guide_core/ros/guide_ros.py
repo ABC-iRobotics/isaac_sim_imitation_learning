@@ -306,7 +306,7 @@ class GUIDEROS2Interface(Node):
             id = request.id
             self._logger.info(f"Starting recording for scene {id}...")
 
-            self._backend._scene_manager.start_recording(id)
+            self._backend._scene_manager.start_recording(id, request.path)
 
             # Block until warmup is done and state is RECORDING
             self._backend._scene_manager.wait_start_recording_event(id)

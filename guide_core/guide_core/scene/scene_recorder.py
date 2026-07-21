@@ -10,6 +10,9 @@ from threading import Event, Thread
 
 import numpy as np
 
+# Schema version for the GUIDE metadata sidecar (guide_info.json / guide_episodes.jsonl).
+GUIDE_META_SCHEMA = 1
+
 
 class SceneRecorder(Thread):
     def __init__(self, package_name: str, task_name: str, config: dict):
@@ -33,6 +36,9 @@ class SceneRecorder(Thread):
         # see put_record_data. Non-zero means the encoder can't keep up, not a stall.
         self._dropped_frames = 0
 
+        # Base directory for datasets, set per StartRecording request; empty => ~/dataset.
+        self._output_path = ""
+
         self.dataset = None
         self.LeRobotDataset = None
 
@@ -41,6 +47,18 @@ class SceneRecorder(Thread):
 
     def clear_start_recording(self):
         self.start_recording_event.clear()
+
+    def set_output_path(self, path: str):
+        """Set the dataset base directory for the next dataset (empty => ~/dataset)."""
+        self._output_path = path or ""
+
+    def set_run_meta(self, meta: dict):
+        """Run-level sidecar constants (master_seed, scene/sim id). Pushed once at registration."""
+        self._run_meta = dict(meta or {})
+
+    def set_pending_episode_meta(self, meta: dict):
+        """Per-episode sidecar payload (seed, values, task, target/goal) for the next saved episode."""
+        self._pending_episode_meta = dict(meta) if meta else None
 
     def wait_start_recording(self, timeout=None):
         return self.start_recording_event.wait(timeout)
